@@ -1,0 +1,31 @@
+# Title: Summary, imperative, start upper case, don't end with period
+# No more than 50 chars. #### 50 chars is here: #
+
+# Remember blank line between title and body.
+
+# Body: Explain *what* and *why* (not *how*). Include task ID if any.
+# Wrap at 72 chars. ################################## which is here: #
+
+# At the end: Include Co-authored-by for all contributors.
+# Include at least one empty line before it. Format:
+# Co-authored-by: name <user@users.noreply.github.com>
+
+# --- COMMIT END ---
+# Type can be
+#   feat     (new feature)
+#   fix      (bug fix)
+#   refactor (refactoring code)
+#   style    (formatting, missing semicolons, etc; no code change)
+#   doc      (changes to documentation)
+#   test     (adding or refactoring tests; no production code change)
+#   chore    (updating build tasks, package manager configs, etc)
+#
+# --------------------
+# Remember to:
+#   * Use the imperative mood in the subject line
+#   * Capitalize the subject line
+#   * Do not end the subject line with a period
+#   * Separate subject from body with a blank line
+#   * Use the body to explain what and why vs. how
+#   * Can use multiple lines with "-" for bullet points in body
+# --------------------

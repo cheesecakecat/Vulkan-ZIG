@@ -1,0 +1,40 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+release/
+debug/
+
+# Vulkan compiled shaders
+*.spv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Dependencies
+deps/
+
+# Build configuration
+build.zig.zon.lock
+
+# Debug files
+*.pdb
+*.dSYM/
+
+# Test artifacts
+test-tmp/
+
+# Environment variables
+.env
+.env.local
+
+# Log files
+*.log
+logs/

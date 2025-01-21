@@ -1,0 +1,45 @@
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Zig files
+*.zig text diff=zig
+*.zon text
+
+# Vulkan files
+*.spv binary
+*.glsl text
+*.vert text
+*.frag text
+*.comp text
+*.geom text
+*.tesc text
+*.tese text
+
+# Documentation
+*.md text diff=markdown
+*.txt text
+*.pdf binary
+
+# Build artifacts
+zig-cache/ binary
+zig-out/ binary
+
+# Images
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.svg text
+
+# Libraries
+*.dll binary
+*.so binary
+*.dylib binary
+*.lib binary
+*.a binary
+
+# Exclude files from archive
+.gitattributes export-ignore
+.gitignore export-ignore
+.gitmessage export-ignore
+.github/ export-ignore
