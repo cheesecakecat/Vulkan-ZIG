@@ -37,22 +37,31 @@ jobs:
       run: |
         echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
         echo "$VULKAN_SDK/bin" >> $GITHUB_PATH
+        # Debug info
+        echo "VULKAN_SDK path: $VULKAN_SDK"
+        echo "PATH: $PATH"
 
     - name: Verify Vulkan Tools
       shell: bash
       run: |
-        which glslc || echo "glslc not found"
-        ls -la $VULKAN_SDK/bin || echo "bin directory not found"
+        # Print glslc location
+        which glslc || echo "glslc not found in PATH"
+        # Check if glslc exists in Vulkan SDK bin
+        test -f "$VULKAN_SDK/bin/glslc" && echo "glslc found in VULKAN_SDK/bin" || echo "glslc not found in VULKAN_SDK/bin"
+        # List Vulkan SDK bin contents
+        ls -la "$VULKAN_SDK/bin" || echo "bin directory not found"
 
     - name: Build
       run: zig build
       env:
         VULKAN_SDK: ${{ env.VULKAN_SDK }}
+        PATH: ${{ env.PATH }}
 
     - name: Run Tests
       run: zig build test
       env:
         VULKAN_SDK: ${{ env.VULKAN_SDK }}
+        PATH: ${{ env.PATH }}
 
     - name: Check Format
       run: zig fmt --check src/
@@ -63,6 +72,7 @@ jobs:
         zig build test -Dvalidation=true
       env:
         VULKAN_SDK: ${{ env.VULKAN_SDK }}
+        PATH: ${{ env.PATH }}
 
   lint:
     runs-on: ubuntu-latest
