@@ -29,9 +29,6 @@ jobs:
           Vulkan-Headers,
           Vulkan-Loader,
           Glslang,
-          SPIRV-Tools,
-          SPIRV-Cross,
-          SPIRV-Reflect,
           SPIRV-Headers
         vulkan-use-cache: true
 
@@ -45,7 +42,6 @@ jobs:
       shell: bash
       run: |
         which glslc || echo "glslc not found"
-        which spirv-opt || echo "spirv-opt not found"
         ls -la $VULKAN_SDK/bin || echo "bin directory not found"
 
     - name: Build
