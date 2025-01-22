@@ -117,8 +117,8 @@ pub fn build(b: *std.Build) void {
         "glslangValidator",
         "-V",
         "-o",
-        "src/shaders/triangle.vert",
         "src/shaders/triangle.vert.spv",
+        "src/shaders/triangle.vert",
     });
 
     // Compile fragment shader
@@ -126,8 +126,8 @@ pub fn build(b: *std.Build) void {
         "glslangValidator",
         "-V",
         "-o",
-        "src/shaders/triangle.frag",
         "src/shaders/triangle.frag.spv",
+        "src/shaders/triangle.frag",
     });
 
     exe.step.dependOn(&vert_shader.step);
