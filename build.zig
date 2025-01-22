@@ -112,9 +112,15 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // Get platform-specific glslang validator executable name
+    const glslang_exe = switch (target.result.os.tag) {
+        .windows => "glslangValidator.exe",
+        else => "glslangValidator",
+    };
+
     // Compile vertex shader
     const vert_shader = b.addSystemCommand(&.{
-        "glslangValidator",
+        glslang_exe,
         "-V",
         "-o",
         "src/shaders/triangle.vert.spv",
@@ -123,7 +129,7 @@ pub fn build(b: *std.Build) void {
 
     // Compile fragment shader
     const frag_shader = b.addSystemCommand(&.{
-        "glslangValidator",
+        glslang_exe,
         "-V",
         "-o",
         "src/shaders/triangle.frag.spv",
