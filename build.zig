@@ -112,29 +112,21 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // Shader compilation
-    const glslc_path = switch (target.result.os.tag) {
-        .windows => b.pathJoin(&.{ vulkan_sdk, "Bin", "glslc.exe" }),
-        .linux, .macos => b.pathJoin(&.{ vulkan_sdk, "bin", "glslc" }),
-        else => {
-            std.debug.print("Unsupported operating system\n", .{});
-            std.process.exit(1);
-        },
-    };
-
     // Compile vertex shader
     const vert_shader = b.addSystemCommand(&.{
-        glslc_path,
-        "src/shaders/triangle.vert",
+        "glslangValidator",
+        "-V",
         "-o",
+        "src/shaders/triangle.vert",
         "src/shaders/triangle.vert.spv",
     });
 
     // Compile fragment shader
     const frag_shader = b.addSystemCommand(&.{
-        glslc_path,
-        "src/shaders/triangle.frag",
+        "glslangValidator",
+        "-V",
         "-o",
+        "src/shaders/triangle.frag",
         "src/shaders/triangle.frag.spv",
     });
 
