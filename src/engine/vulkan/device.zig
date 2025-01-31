@@ -1,9 +1,8 @@
 const std = @import("std");
-const core = @import("core.zig");
-
 const c = @cImport({
     @cInclude("vulkan/vulkan.h");
 });
+const logger = @import("../core/logger.zig");
 
 pub const QueueFamilyIndices = struct {
     graphics_family: ?u32 = null,
@@ -14,186 +13,225 @@ pub const QueueFamilyIndices = struct {
     }
 };
 
-pub fn pickPhysicalDevice(instance: c.VkInstance, surface: c.VkSurfaceKHR) !c.VkPhysicalDevice {
-    var device_count: u32 = 0;
-    _ = c.vkEnumeratePhysicalDevices(instance, &device_count, null);
-
-    if (device_count == 0) {
-        return error.NoGPUFound;
-    }
-
-    const devices = try std.heap.c_allocator.alloc(c.VkPhysicalDevice, device_count);
-    defer std.heap.c_allocator.free(devices);
-    _ = c.vkEnumeratePhysicalDevices(instance, &device_count, devices.ptr);
-
-    for (devices) |device| {
-        if (try isDeviceSuitable(device, surface)) {
-            return device;
-        }
-    }
-
-    return error.NoSuitableGPU;
-}
-
-pub fn createLogicalDevice(
-    physical_device: c.VkPhysicalDevice,
-    surface: c.VkSurfaceKHR,
+pub const Device = struct {
+    physical: c.VkPhysicalDevice,
+    logical: c.VkDevice,
+    graphics_queue: c.VkQueue,
+    present_queue: c.VkQueue,
+    queue_indices: QueueFamilyIndices,
     allocator: std.mem.Allocator,
-) !struct { device: c.VkDevice, graphics_queue: c.VkQueue, present_queue: c.VkQueue } {
-    const indices = try findQueueFamilies(physical_device, surface);
 
-    var unique_queue_families = std.ArrayList(u32).init(allocator);
-    defer unique_queue_families.deinit();
+    pub fn init(
+        instance: c.VkInstance,
+        surface: c.VkSurfaceKHR,
+        allocator: std.mem.Allocator,
+    ) !Device {
+        const physical = try pickPhysicalDevice(instance, surface, allocator);
+        const queue_indices = try findQueueFamilies(physical, surface, allocator);
+        const device = try createLogicalDevice(physical, queue_indices);
 
-    try unique_queue_families.append(indices.graphics_family.?);
-    if (indices.graphics_family.? != indices.present_family.?) {
-        try unique_queue_families.append(indices.present_family.?);
+        var graphics_queue: c.VkQueue = undefined;
+        var present_queue: c.VkQueue = undefined;
+
+        c.vkGetDeviceQueue(device, queue_indices.graphics_family.?, 0, &graphics_queue);
+        c.vkGetDeviceQueue(device, queue_indices.present_family.?, 0, &present_queue);
+
+        return Device{
+            .physical = physical,
+            .logical = device,
+            .graphics_queue = graphics_queue,
+            .present_queue = present_queue,
+            .queue_indices = queue_indices,
+            .allocator = allocator,
+        };
     }
 
-    var queue_create_infos = std.ArrayList(c.VkDeviceQueueCreateInfo).init(allocator);
-    defer queue_create_infos.deinit();
-
-    const queue_priority = [_]f32{1.0};
-    for (unique_queue_families.items) |queue_family| {
-        try queue_create_infos.append(.{
-            .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .pNext = null,
-            .flags = 0,
-            .queueFamilyIndex = queue_family,
-            .queueCount = 1,
-            .pQueuePriorities = &queue_priority,
-        });
+    pub fn deinit(self: *Device) void {
+        c.vkDestroyDevice(self.logical, null);
     }
 
-    const device_features = std.mem.zeroes(c.VkPhysicalDeviceFeatures);
-    const create_info = c.VkDeviceCreateInfo{
-        .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = null,
-        .flags = 0,
-        .queueCreateInfoCount = @intCast(queue_create_infos.items.len),
-        .pQueueCreateInfos = queue_create_infos.items.ptr,
-        .enabledLayerCount = @intCast(core.validation_layers.len),
-        .ppEnabledLayerNames = &core.validation_layers,
-        .enabledExtensionCount = @intCast(core.required_device_extensions.len),
-        .ppEnabledExtensionNames = &core.required_device_extensions,
-        .pEnabledFeatures = &device_features,
-    };
-
-    var device: c.VkDevice = undefined;
-    if (c.vkCreateDevice(physical_device, &create_info, null, &device) != c.VK_SUCCESS) {
-        return error.DeviceCreationFailed;
-    }
-
-    var graphics_queue: c.VkQueue = undefined;
-    var present_queue: c.VkQueue = undefined;
-    c.vkGetDeviceQueue(device, indices.graphics_family.?, 0, &graphics_queue);
-    c.vkGetDeviceQueue(device, indices.present_family.?, 0, &present_queue);
-
-    return .{
-        .device = device,
-        .graphics_queue = graphics_queue,
-        .present_queue = present_queue,
-    };
-}
-
-pub fn findQueueFamilies(device: c.VkPhysicalDevice, surface: c.VkSurfaceKHR) !QueueFamilyIndices {
-    var indices = QueueFamilyIndices{};
-
-    var queue_family_count: u32 = 0;
-    c.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, null);
-
-    const queue_families = try std.heap.c_allocator.alloc(c.VkQueueFamilyProperties, queue_family_count);
-    defer std.heap.c_allocator.free(queue_families);
-    c.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.ptr);
-
-    for (queue_families, 0..) |queue_family, i| {
-        if (queue_family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT != 0) {
-            indices.graphics_family = @intCast(i);
+    fn pickPhysicalDevice(
+        instance: c.VkInstance,
+        surface: c.VkSurfaceKHR,
+        allocator: std.mem.Allocator,
+    ) !c.VkPhysicalDevice {
+        var device_count: u32 = 0;
+        if (c.vkEnumeratePhysicalDevices(instance, &device_count, null) != c.VK_SUCCESS) {
+            return error.PhysicalDeviceEnumerationFailed;
         }
 
-        var present_support: c.VkBool32 = c.VK_FALSE;
-        _ = c.vkGetPhysicalDeviceSurfaceSupportKHR(device, @intCast(i), surface, &present_support);
-        if (present_support == c.VK_TRUE) {
-            indices.present_family = @intCast(i);
+        if (device_count == 0) {
+            return error.NoPhysicalDevicesFound;
         }
 
-        if (indices.isComplete()) break;
-    }
+        const devices = try allocator.alloc(c.VkPhysicalDevice, device_count);
+        defer allocator.free(devices);
+        _ = c.vkEnumeratePhysicalDevices(instance, &device_count, devices.ptr);
 
-    return indices;
-}
+        for (devices) |device| {
+            var properties: c.VkPhysicalDeviceProperties = undefined;
+            c.vkGetPhysicalDeviceProperties(device, &properties);
 
-fn isDeviceSuitable(device: c.VkPhysicalDevice, surface: c.VkSurfaceKHR) !bool {
-    const indices = try findQueueFamilies(device, surface);
-    const extensions_supported = try checkDeviceExtensionSupport(device);
-
-    var swapchain_adequate = false;
-    if (extensions_supported) {
-        var swapchain_support = try querySwapChainSupport(device, surface);
-        defer {
-            swapchain_support.deinit();
-        }
-        swapchain_adequate = swapchain_support.formats.len > 0 and swapchain_support.present_modes.len > 0;
-    }
-
-    return indices.isComplete() and extensions_supported and swapchain_adequate;
-}
-
-fn checkDeviceExtensionSupport(device: c.VkPhysicalDevice) !bool {
-    var extension_count: u32 = undefined;
-    _ = c.vkEnumerateDeviceExtensionProperties(device, null, &extension_count, null);
-
-    const available_extensions = try std.heap.c_allocator.alloc(c.VkExtensionProperties, extension_count);
-    defer std.heap.c_allocator.free(available_extensions);
-    _ = c.vkEnumerateDeviceExtensionProperties(device, null, &extension_count, available_extensions.ptr);
-
-    const required_extensions = core.required_device_extensions;
-    var required_extension_count = required_extensions.len;
-
-    for (required_extensions) |required_extension| {
-        for (available_extensions) |extension| {
-            const available_extension_name = std.mem.sliceTo(&extension.extensionName, 0);
-            if (std.mem.eql(u8, std.mem.sliceTo(required_extension, 0), available_extension_name)) {
-                required_extension_count -= 1;
-                break;
+            if (properties.deviceType == c.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU and
+                try isDeviceSuitable(device, surface, allocator))
+            {
+                return device;
             }
         }
+
+        for (devices) |device| {
+            if (try isDeviceSuitable(device, surface, allocator)) {
+                return device;
+            }
+        }
+
+        return error.NoSuitablePhysicalDevice;
     }
 
-    return required_extension_count == 0;
-}
+    fn findQueueFamilies(
+        device: c.VkPhysicalDevice,
+        surface: c.VkSurfaceKHR,
+        allocator: std.mem.Allocator,
+    ) !QueueFamilyIndices {
+        var indices = QueueFamilyIndices{};
 
-pub const SwapChainSupportDetails = struct {
-    capabilities: c.VkSurfaceCapabilitiesKHR,
-    formats: []c.VkSurfaceFormatKHR,
-    present_modes: []c.VkPresentModeKHR,
-    allocator: std.mem.Allocator,
+        var queue_family_count: u32 = 0;
+        c.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, null);
 
-    pub fn deinit(self: *SwapChainSupportDetails) void {
-        self.allocator.free(self.formats);
-        self.allocator.free(self.present_modes);
+        const queue_families = try allocator.alloc(c.VkQueueFamilyProperties, queue_family_count);
+        defer allocator.free(queue_families);
+        c.vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_families.ptr);
+
+        for (queue_families, 0..) |family, i| {
+            if (family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT != 0) {
+                indices.graphics_family = @intCast(i);
+            }
+
+            var present_support: c.VkBool32 = c.VK_FALSE;
+            _ = c.vkGetPhysicalDeviceSurfaceSupportKHR(device, @intCast(i), surface, &present_support);
+
+            if (present_support == c.VK_TRUE) {
+                indices.present_family = @intCast(i);
+            }
+
+            if (indices.isComplete()) break;
+        }
+
+        return indices;
     }
-};
 
-pub fn querySwapChainSupport(device: c.VkPhysicalDevice, surface: c.VkSurfaceKHR) !SwapChainSupportDetails {
-    var details = SwapChainSupportDetails{
-        .capabilities = undefined,
-        .formats = undefined,
-        .present_modes = undefined,
-        .allocator = std.heap.c_allocator,
+    fn createLogicalDevice(
+        physical_device: c.VkPhysicalDevice,
+        queue_indices: QueueFamilyIndices,
+    ) !c.VkDevice {
+        const queue_priority = [_]f32{1.0};
+        var queue_create_infos: [2]c.VkDeviceQueueCreateInfo = undefined;
+        var queue_create_info_count: u32 = 1;
+
+        queue_create_infos[0] = .{
+            .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = queue_indices.graphics_family.?,
+            .queueCount = 1,
+            .pQueuePriorities = &queue_priority,
+            .flags = 0,
+            .pNext = null,
+        };
+
+        if (queue_indices.present_family.? != queue_indices.graphics_family.?) {
+            queue_create_infos[1] = .{
+                .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueFamilyIndex = queue_indices.present_family.?,
+                .queueCount = 1,
+                .pQueuePriorities = &queue_priority,
+                .flags = 0,
+                .pNext = null,
+            };
+            queue_create_info_count += 1;
+        }
+
+        const device_features = c.VkPhysicalDeviceFeatures{
+            .samplerAnisotropy = c.VK_TRUE,
+            .fillModeNonSolid = c.VK_TRUE,
+            .wideLines = c.VK_TRUE,
+            .geometryShader = c.VK_FALSE,
+            .tessellationShader = c.VK_FALSE,
+        };
+
+        const device_extensions = [_][*:0]const u8{
+            "VK_KHR_swapchain",
+        };
+
+        const device_create_info = c.VkDeviceCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .queueCreateInfoCount = queue_create_info_count,
+            .pQueueCreateInfos = &queue_create_infos,
+            .pEnabledFeatures = &device_features,
+            .enabledExtensionCount = device_extensions.len,
+            .ppEnabledExtensionNames = &device_extensions,
+            .enabledLayerCount = 0,
+            .ppEnabledLayerNames = null,
+            .flags = 0,
+            .pNext = null,
+        };
+
+        var device: c.VkDevice = undefined;
+        if (c.vkCreateDevice(physical_device, &device_create_info, null, &device) != c.VK_SUCCESS) {
+            return error.DeviceCreationFailed;
+        }
+
+        return device;
+    }
+
+    fn isDeviceSuitable(
+        device: c.VkPhysicalDevice,
+        surface: c.VkSurfaceKHR,
+        allocator: std.mem.Allocator,
+    ) !bool {
+        const indices = try findQueueFamilies(device, surface, allocator);
+        if (!indices.isComplete()) return false;
+
+        const extensions_supported = try checkDeviceExtensionSupport(device, allocator);
+        if (!extensions_supported) return false;
+
+        var features: c.VkPhysicalDeviceFeatures = undefined;
+        c.vkGetPhysicalDeviceFeatures(device, &features);
+        if (features.samplerAnisotropy != c.VK_TRUE) return false;
+
+        return true;
+    }
+
+    fn checkDeviceExtensionSupport(
+        device: c.VkPhysicalDevice,
+        allocator: std.mem.Allocator,
+    ) !bool {
+        var extension_count: u32 = 0;
+        _ = c.vkEnumerateDeviceExtensionProperties(device, null, &extension_count, null);
+
+        const available_extensions = try allocator.alloc(c.VkExtensionProperties, extension_count);
+        defer allocator.free(available_extensions);
+        _ = c.vkEnumerateDeviceExtensionProperties(device, null, &extension_count, available_extensions.ptr);
+
+        const required_extensions = [_][*:0]const u8{
+            c.VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        };
+
+        outer: for (required_extensions) |required| {
+            for (available_extensions) |extension| {
+                const available_name = @as([*:0]const u8, @ptrCast(&extension.extensionName));
+                if (std.mem.eql(u8, std.mem.span(required), std.mem.span(available_name))) {
+                    continue :outer;
+                }
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    pub const Error = error{
+        NoGraphicsDevice,
+        NoSuitableDevice,
+        DeviceCreationFailed,
+        ExtensionNotSupported,
     };
-
-    _ = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
-
-    var format_count: u32 = undefined;
-    _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, null);
-    details.formats = try details.allocator.alloc(c.VkSurfaceFormatKHR, format_count);
-    _ = c.vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, details.formats.ptr);
-
-    var present_mode_count: u32 = undefined;
-    _ = c.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, null);
-    details.present_modes = try details.allocator.alloc(c.VkPresentModeKHR, present_mode_count);
-    _ = c.vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &present_mode_count, details.present_modes.ptr);
-
-    return details;
-}
+};
