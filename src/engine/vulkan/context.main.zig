@@ -147,15 +147,15 @@ pub const Context = struct {
 
         logger.debug("Framebuffer size: {}x{}", .{ fb_size.width, fb_size.height });
         logger.debug("Projection matrix:", .{});
-        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection[0][0], projection[0][1], projection[0][2], projection[0][3] });
-        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection[1][0], projection[1][1], projection[1][2], projection[1][3] });
-        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection[2][0], projection[2][1], projection[2][2], projection[2][3] });
-        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection[3][0], projection[3][1], projection[3][2], projection[3][3] });
+        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(0, 0), projection.get(0, 1), projection.get(0, 2), projection.get(0, 3) });
+        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(1, 0), projection.get(1, 1), projection.get(1, 2), projection.get(1, 3) });
+        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(2, 0), projection.get(2, 1), projection.get(2, 2), projection.get(2, 3) });
+        logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(3, 0), projection.get(3, 1), projection.get(3, 2), projection.get(3, 3) });
 
         self.inner.swapchain = vk_swapchain;
         self.inner.command_buffers = command_buffers;
         self.inner.pipeline = vk_pipeline;
-        self.inner.projection = projection;
+        self.inner.projection = projection.toArray2D();
 
         return self;
     }
@@ -377,7 +377,7 @@ pub const Context = struct {
 
         old_swapchain.deinit();
 
-        self.inner.projection = math.ortho(0, @floatFromInt(fb_size.width), @floatFromInt(fb_size.height), 0);
+        self.inner.projection = math.ortho(0, @floatFromInt(fb_size.width), @floatFromInt(fb_size.height), 0).toArray2D();
         logger.debug("window: updated projection matrix for new size", .{});
     }
 

@@ -6,59 +6,24 @@ const math = @import("../core/math.zig");
 const logger = @import("../core/logger.zig");
 const resources = @import("resources.zig");
 const builtin = @import("std").builtin;
-const Vector = std.meta.Vector;
-
-const Vec4f = @Vector(4, f32);
-const Mat4x4f = [4]Vec4f;
-
-fn mat4x4_identity() Mat4x4f {
-    return .{
-        Vec4f{ 1.0, 0.0, 0.0, 0.0 },
-        Vec4f{ 0.0, 1.0, 0.0, 0.0 },
-        Vec4f{ 0.0, 0.0, 1.0, 0.0 },
-        Vec4f{ 0.0, 0.0, 0.0, 1.0 },
-    };
-}
-
-fn mat4x4_multiply_simd(a: Mat4x4f, b: Mat4x4f) Mat4x4f {
-    var result: Mat4x4f = undefined;
-    inline for (0..4) |i| {
-        const row = a[i];
-        inline for (0..4) |j| {
-            const col = Vec4f{ b[0][j], b[1][j], b[2][j], b[3][j] };
-            result[i][j] = @reduce(.Add, row * col);
-        }
-    }
-    return result;
-}
-
-fn calculateModelMatrixSIMD(position: [2]f32, size: [2]f32, rotation: f32) Mat4x4f {
-    const cos_r = @cos(rotation);
-    const sin_r = @sin(rotation);
-
-    var sr_matrix = mat4x4_identity();
-    sr_matrix[0][0] = cos_r * size[0];
-    sr_matrix[0][1] = -sin_r * size[0];
-    sr_matrix[1][0] = sin_r * size[1];
-    sr_matrix[1][1] = cos_r * size[1];
-
-    var t_matrix = mat4x4_identity();
-    t_matrix[3][0] = position[0];
-    t_matrix[3][1] = position[1];
-
-    return mat4x4_multiply_simd(t_matrix, sr_matrix);
-}
 
 fn calculateModelMatrix(position: [2]f32, size: [2]f32, rotation: f32) [4][4]f32 {
-    const simd_result = calculateModelMatrixSIMD(position, size, rotation);
-    var result: [4][4]f32 = undefined;
+    const pos = math.Vec2.fromArray(position);
+    const scale = math.Vec2.fromArray(size);
 
-    inline for (0..4) |i| {
-        inline for (0..4) |j| {
-            result[i][j] = simd_result[i][j];
-        }
-    }
-    return result;
+    // Create translation matrix
+    var transform = math.Mat4.translate(pos.x(), pos.y(), 0);
+
+    // Create rotation matrix
+    const rot = math.Mat4.rotate(rotation, 0, 0, 1);
+
+    // Create scale matrix
+    const scl = math.Mat4.scale(scale.x(), scale.y(), 1);
+
+    // Combine matrices: transform * rot * scale
+    const result = transform.mul(rot).mul(scl);
+
+    return result.toArray2D();
 }
 
 pub const Vertex = extern struct {
@@ -248,11 +213,20 @@ const MAX_SPRITES_PER_DISPATCH = COMPUTE_WORKGROUP_SIZE * 64;
 
 const MEMORY_POOL_BLOCK_SIZE = 64;
 const MEMORY_POOL_ALIGNMENT = 16;
+const MEMORY_POOL_MIN_BLOCKS = 8;
+const MEMORY_POOL_MAX_BLOCKS = 1024;
 
 const MemoryBlock = struct {
     data: []align(MEMORY_POOL_ALIGNMENT) u8,
     next: ?*MemoryBlock,
     used: bool,
+    size: usize,
+};
+
+const MemoryChunk = struct {
+    blocks: []MemoryBlock,
+    next: ?*MemoryChunk,
+    used_blocks: u32,
 };
 
 const SpriteMemoryPool = struct {
@@ -261,9 +235,13 @@ const SpriteMemoryPool = struct {
     indices: []align(MEMORY_POOL_ALIGNMENT) u32,
     instances: []align(MEMORY_POOL_ALIGNMENT) SpriteInstance,
 
-    transform_blocks: std.ArrayList(*MemoryBlock),
-    vertex_blocks: std.ArrayList(*MemoryBlock),
-    instance_blocks: std.ArrayList(*MemoryBlock),
+    transform_chunks: std.ArrayList(*MemoryChunk),
+    vertex_chunks: std.ArrayList(*MemoryChunk),
+    instance_chunks: std.ArrayList(*MemoryChunk),
+
+    free_transforms: ?*MemoryBlock,
+    free_vertices: ?*MemoryBlock,
+    free_instances: ?*MemoryBlock,
 
     allocator: std.mem.Allocator,
 
@@ -280,58 +258,49 @@ const SpriteMemoryPool = struct {
         const instances = try alloc.alignedAlloc(SpriteInstance, MEMORY_POOL_ALIGNMENT, max_sprites);
         errdefer alloc.free(instances);
 
-        var transform_blocks = std.ArrayList(*MemoryBlock).init(alloc);
-        errdefer transform_blocks.deinit();
+        var transform_chunks = std.ArrayList(*MemoryChunk).init(alloc);
+        errdefer transform_chunks.deinit();
 
-        var vertex_blocks = std.ArrayList(*MemoryBlock).init(alloc);
-        errdefer vertex_blocks.deinit();
+        var vertex_chunks = std.ArrayList(*MemoryChunk).init(alloc);
+        errdefer vertex_chunks.deinit();
 
-        var instance_blocks = std.ArrayList(*MemoryBlock).init(alloc);
-        errdefer instance_blocks.deinit();
+        var instance_chunks = std.ArrayList(*MemoryChunk).init(alloc);
+        errdefer instance_chunks.deinit();
 
-        const blocks_needed = (max_sprites + MEMORY_POOL_BLOCK_SIZE - 1) / MEMORY_POOL_BLOCK_SIZE;
-        try transform_blocks.ensureTotalCapacity(blocks_needed);
-        try vertex_blocks.ensureTotalCapacity(blocks_needed * 4);
-        try instance_blocks.ensureTotalCapacity(blocks_needed);
-
-        var i: usize = 0;
-        while (i < blocks_needed) : (i += 1) {
-            const transform_block = try createMemoryBlock(alloc, @sizeOf(SpriteTransform) * MEMORY_POOL_BLOCK_SIZE);
-            try transform_blocks.append(transform_block);
-
-            const vertex_block = try createMemoryBlock(alloc, @sizeOf(Vertex) * MEMORY_POOL_BLOCK_SIZE * 4);
-            try vertex_blocks.append(vertex_block);
-
-            const instance_block = try createMemoryBlock(alloc, @sizeOf(SpriteInstance) * MEMORY_POOL_BLOCK_SIZE);
-            try instance_blocks.append(instance_block);
-        }
+        const initial_blocks = @max(MEMORY_POOL_MIN_BLOCKS, max_sprites / MEMORY_POOL_BLOCK_SIZE);
+        try transform_chunks.append(try createMemoryChunk(alloc, @sizeOf(SpriteTransform), initial_blocks));
+        try vertex_chunks.append(try createMemoryChunk(alloc, @sizeOf(Vertex) * 4, initial_blocks));
+        try instance_chunks.append(try createMemoryChunk(alloc, @sizeOf(SpriteInstance), initial_blocks));
 
         return SpriteMemoryPool{
             .transforms = transforms,
             .vertices = vertices,
             .indices = indices,
             .instances = instances,
-            .transform_blocks = transform_blocks,
-            .vertex_blocks = vertex_blocks,
-            .instance_blocks = instance_blocks,
+            .transform_chunks = transform_chunks,
+            .vertex_chunks = vertex_chunks,
+            .instance_chunks = instance_chunks,
+            .free_transforms = null,
+            .free_vertices = null,
+            .free_instances = null,
             .allocator = alloc,
         };
     }
 
     pub fn deinit(self: *SpriteMemoryPool) void {
-        for (self.transform_blocks.items) |block| {
-            freeMemoryBlock(self.allocator, block);
+        for (self.transform_chunks.items) |chunk| {
+            freeMemoryChunk(self.allocator, chunk);
         }
-        for (self.vertex_blocks.items) |block| {
-            freeMemoryBlock(self.allocator, block);
+        for (self.vertex_chunks.items) |chunk| {
+            freeMemoryChunk(self.allocator, chunk);
         }
-        for (self.instance_blocks.items) |block| {
-            freeMemoryBlock(self.allocator, block);
+        for (self.instance_chunks.items) |chunk| {
+            freeMemoryChunk(self.allocator, chunk);
         }
 
-        self.transform_blocks.deinit();
-        self.vertex_blocks.deinit();
-        self.instance_blocks.deinit();
+        self.transform_chunks.deinit();
+        self.vertex_chunks.deinit();
+        self.instance_chunks.deinit();
 
         self.allocator.free(self.transforms);
         self.allocator.free(self.vertices);
@@ -339,83 +308,198 @@ const SpriteMemoryPool = struct {
         self.allocator.free(self.instances);
     }
 
-    fn createMemoryBlock(allocator: std.mem.Allocator, size: usize) !*MemoryBlock {
-        const block = try allocator.create(MemoryBlock);
-        errdefer allocator.destroy(block);
+    fn createMemoryChunk(allocator: std.mem.Allocator, block_size: usize, num_blocks: u32) !*MemoryChunk {
+        const chunk = try allocator.create(MemoryChunk);
+        errdefer allocator.destroy(chunk);
 
-        const aligned_data = try allocator.alignedAlloc(u8, MEMORY_POOL_ALIGNMENT, size);
-        errdefer allocator.free(aligned_data);
+        const aligned_size = std.mem.alignForward(usize, block_size, MEMORY_POOL_ALIGNMENT);
+        const blocks = try allocator.alloc(MemoryBlock, num_blocks);
+        errdefer allocator.free(blocks);
 
-        block.* = .{
-            .data = aligned_data,
+        const total_size = aligned_size * num_blocks;
+        const data = try allocator.alignedAlloc(u8, MEMORY_POOL_ALIGNMENT, total_size);
+        errdefer allocator.free(data);
+
+        for (blocks, 0..) |*block, i| {
+            const start = i * aligned_size;
+            const slice = data[start .. start + aligned_size];
+            block.* = .{
+                .data = @alignCast(slice),
+                .next = if (i < blocks.len - 1) &blocks[i + 1] else null,
+                .used = false,
+                .size = block_size,
+            };
+        }
+
+        chunk.* = .{
+            .blocks = blocks,
             .next = null,
-            .used = false,
+            .used_blocks = 0,
         };
 
-        return block;
+        return chunk;
     }
 
-    fn freeMemoryBlock(allocator: std.mem.Allocator, block: *MemoryBlock) void {
-        allocator.free(block.data);
-        allocator.destroy(block);
+    fn freeMemoryChunk(allocator: std.mem.Allocator, chunk: *MemoryChunk) void {
+        if (chunk.blocks.len > 0) {
+            allocator.free(chunk.blocks[0].data[0 .. chunk.blocks[0].size * chunk.blocks.len]);
+        }
+        allocator.free(chunk.blocks);
+        allocator.destroy(chunk);
     }
 
     pub fn allocTransform(self: *SpriteMemoryPool) ?*SpriteTransform {
-        for (self.transform_blocks.items) |block| {
-            if (!block.used) {
+        if (self.free_transforms) |block| {
+            self.free_transforms = block.next;
+            block.used = true;
+            return @ptrCast(@alignCast(block.data.ptr));
+        }
+
+        for (self.transform_chunks.items) |chunk| {
+            if (chunk.used_blocks < chunk.blocks.len) {
+                const block = &chunk.blocks[chunk.used_blocks];
+                chunk.used_blocks += 1;
                 block.used = true;
                 return @ptrCast(@alignCast(block.data.ptr));
             }
         }
+
+        if (self.transform_chunks.items.len * MEMORY_POOL_BLOCK_SIZE < MEMORY_POOL_MAX_BLOCKS) {
+            const new_chunk = createMemoryChunk(
+                self.allocator,
+                @sizeOf(SpriteTransform),
+                MEMORY_POOL_BLOCK_SIZE,
+            ) catch return null;
+
+            self.transform_chunks.append(new_chunk) catch {
+                freeMemoryChunk(self.allocator, new_chunk);
+                return null;
+            };
+
+            const block = &new_chunk.blocks[0];
+            new_chunk.used_blocks = 1;
+            block.used = true;
+            return @ptrCast(@alignCast(block.data.ptr));
+        }
+
         return null;
     }
 
     pub fn allocVertex(self: *SpriteMemoryPool) ?*Vertex {
-        for (self.vertex_blocks.items) |block| {
-            if (!block.used) {
+        if (self.free_vertices) |block| {
+            self.free_vertices = block.next;
+            block.used = true;
+            return @ptrCast(@alignCast(block.data.ptr));
+        }
+
+        for (self.vertex_chunks.items) |chunk| {
+            if (chunk.used_blocks < chunk.blocks.len) {
+                const block = &chunk.blocks[chunk.used_blocks];
+                chunk.used_blocks += 1;
                 block.used = true;
                 return @ptrCast(@alignCast(block.data.ptr));
             }
         }
+
+        if (self.vertex_chunks.items.len * MEMORY_POOL_BLOCK_SIZE < MEMORY_POOL_MAX_BLOCKS) {
+            const new_chunk = createMemoryChunk(
+                self.allocator,
+                @sizeOf(Vertex) * 4,
+                MEMORY_POOL_BLOCK_SIZE,
+            ) catch return null;
+
+            self.vertex_chunks.append(new_chunk) catch {
+                freeMemoryChunk(self.allocator, new_chunk);
+                return null;
+            };
+
+            const block = &new_chunk.blocks[0];
+            new_chunk.used_blocks = 1;
+            block.used = true;
+            return @ptrCast(@alignCast(block.data.ptr));
+        }
+
         return null;
     }
 
     pub fn allocInstance(self: *SpriteMemoryPool) ?*SpriteInstance {
-        for (self.instance_blocks.items) |block| {
-            if (!block.used) {
+        if (self.free_instances) |block| {
+            self.free_instances = block.next;
+            block.used = true;
+            return @ptrCast(@alignCast(block.data.ptr));
+        }
+
+        for (self.instance_chunks.items) |chunk| {
+            if (chunk.used_blocks < chunk.blocks.len) {
+                const block = &chunk.blocks[chunk.used_blocks];
+                chunk.used_blocks += 1;
                 block.used = true;
                 return @ptrCast(@alignCast(block.data.ptr));
             }
         }
+
+        if (self.instance_chunks.items.len * MEMORY_POOL_BLOCK_SIZE < MEMORY_POOL_MAX_BLOCKS) {
+            const new_chunk = createMemoryChunk(
+                self.allocator,
+                @sizeOf(SpriteInstance),
+                MEMORY_POOL_BLOCK_SIZE,
+            ) catch return null;
+
+            self.instance_chunks.append(new_chunk) catch {
+                freeMemoryChunk(self.allocator, new_chunk);
+                return null;
+            };
+
+            const block = &new_chunk.blocks[0];
+            new_chunk.used_blocks = 1;
+            block.used = true;
+            return @ptrCast(@alignCast(block.data.ptr));
+        }
+
         return null;
     }
 
     pub fn freeTransform(self: *SpriteMemoryPool, ptr: *SpriteTransform) void {
         const block_ptr = @as([*]u8, @ptrCast(ptr));
-        for (self.transform_blocks.items) |block| {
-            if (block.data.ptr == block_ptr) {
-                block.used = false;
-                return;
+
+        for (self.transform_chunks.items) |chunk| {
+            for (chunk.blocks) |*block| {
+                if (block.data.ptr == block_ptr) {
+                    block.used = false;
+                    block.next = self.free_transforms;
+                    self.free_transforms = block;
+                    return;
+                }
             }
         }
     }
 
     pub fn freeVertex(self: *SpriteMemoryPool, ptr: *Vertex) void {
         const block_ptr = @as([*]u8, @ptrCast(ptr));
-        for (self.vertex_blocks.items) |block| {
-            if (block.data.ptr == block_ptr) {
-                block.used = false;
-                return;
+
+        for (self.vertex_chunks.items) |chunk| {
+            for (chunk.blocks) |*block| {
+                if (block.data.ptr == block_ptr) {
+                    block.used = false;
+                    block.next = self.free_vertices;
+                    self.free_vertices = block;
+                    return;
+                }
             }
         }
     }
 
     pub fn freeInstance(self: *SpriteMemoryPool, ptr: *SpriteInstance) void {
         const block_ptr = @as([*]u8, @ptrCast(ptr));
-        for (self.instance_blocks.items) |block| {
-            if (block.data.ptr == block_ptr) {
-                block.used = false;
-                return;
+
+        for (self.instance_chunks.items) |chunk| {
+            for (chunk.blocks) |*block| {
+                if (block.data.ptr == block_ptr) {
+                    block.used = false;
+                    block.next = self.free_instances;
+                    self.free_instances = block;
+                    return;
+                }
             }
         }
     }
