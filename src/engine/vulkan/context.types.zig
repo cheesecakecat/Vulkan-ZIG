@@ -5,11 +5,17 @@ const c = @cImport({
 const glfw = @import("mach-glfw");
 
 const instance = @import("instance.zig");
-const device = @import("device.zig");
 const swapchain = @import("swapchain.zig");
+const device = @import("device/logical.zig");
+const physical = @import("device/physical.zig");
 const sync = @import("sync.zig");
 const commands = @import("commands.zig");
 const pipeline = @import("pipeline.zig");
+
+pub const Instance = instance.Instance;
+pub const Swapchain = swapchain.Swapchain;
+pub const Device = device.Device;
+pub const PhysicalDevice = physical.PhysicalDevice;
 
 fn makeVersion(major: u32, minor: u32, patch: u32) u32 {
     return c.VK_MAKE_VERSION(major, minor, patch);

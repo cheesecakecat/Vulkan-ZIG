@@ -6,6 +6,7 @@ const math = @import("../core/math.zig");
 const logger = @import("../core/logger.zig");
 const resources = @import("resources.zig");
 const builtin = @import("std").builtin;
+const physical = @import("device/physical.zig");
 
 fn calculateModelMatrix(position: [2]f32, size: [2]f32, rotation: f32) [4][4]f32 {
     const pos = math.Vec2.fromArray(position);
@@ -788,7 +789,7 @@ pub const SpriteBatch = struct {
 
     pub fn init(
         device: c.VkDevice,
-        physical_device: c.VkPhysicalDevice,
+        physical_device: *physical.PhysicalDevice,
         queue_family: u32,
         compute_shader: ?c.VkShaderModule,
         max_sprites: u32,
@@ -825,7 +826,7 @@ pub const SpriteBatch = struct {
 
         var vertex_buffer = try resources.Buffer.init(
             device,
-            physical_device,
+            physical_device.handle,
             vertex_size,
             c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -834,7 +835,7 @@ pub const SpriteBatch = struct {
 
         var index_buffer = try resources.Buffer.init(
             device,
-            physical_device,
+            physical_device.handle,
             index_size,
             c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -843,7 +844,7 @@ pub const SpriteBatch = struct {
 
         var instance_buffer = try resources.Buffer.init(
             device,
-            physical_device,
+            physical_device.handle,
             instance_size,
             c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -924,7 +925,7 @@ pub const SpriteBatch = struct {
             const transform_size = @sizeOf(SpriteTransform) * max_sprites;
             var transform_buffer = try resources.Buffer.init(
                 device,
-                physical_device,
+                physical_device.handle,
                 transform_size,
                 c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                 c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,

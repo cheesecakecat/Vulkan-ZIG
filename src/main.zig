@@ -129,7 +129,14 @@ pub fn main() !void {
 
     logger.info("window: created display surface 800x600", .{});
 
-    var sprite_batch = try sprite.SpriteBatch.init(context.inner.device.logical, context.inner.device.physical, context.inner.device.queue_indices.graphics_family.?, null, 10000, alloc);
+    var sprite_batch = try sprite.SpriteBatch.init(
+        context.inner.device.handle,
+        context.inner.device.physical_device,
+        context.inner.device.queues.graphics.family,
+        null,
+        10000,
+        alloc,
+    );
     defer sprite_batch.deinit();
 
     const color = [4]f32{ 1.0, 0.0, 0.5, 1.0 };

@@ -9,8 +9,9 @@ const sprite = @import("sprite.zig");
 
 const types = @import("context.types.zig");
 const instance = @import("instance.zig");
-const device = @import("device.zig");
 const swapchain = @import("swapchain.zig");
+const device = @import("device/logical.zig");
+const physical = @import("device/physical.zig");
 const sync = @import("sync.zig");
 const commands = @import("commands.zig");
 const pipeline = @import("pipeline.zig");
@@ -78,11 +79,14 @@ pub const Context = struct {
         const surface = try createSurface(vk_instance.handle, window);
         errdefer c.vkDestroySurfaceKHR(vk_instance.handle, surface, null);
 
-        var vk_device = try device.Device.init(vk_instance.handle, surface, alloc);
+        var phys_device = try physical.PhysicalDevice.selectBest(vk_instance.handle, surface, alloc);
+        errdefer phys_device.deinit(alloc);
+
+        var vk_device = try device.Device.init(phys_device, .{}, alloc);
         errdefer vk_device.deinit();
 
         var vk_sync = try sync.SyncObjects.init(
-            vk_device.logical,
+            vk_device.handle,
             config.max_frames_in_flight,
             alloc,
         );
@@ -107,8 +111,8 @@ pub const Context = struct {
         };
 
         self.inner.command_pool = try commands.CommandPool.init(
-            vk_device.logical,
-            vk_device.queue_indices.graphics_family.?,
+            vk_device.handle,
+            vk_device.getQueueFamilyIndices().graphics_family.?,
         );
         errdefer self.inner.command_pool.deinit();
 
@@ -123,7 +127,7 @@ pub const Context = struct {
         const fb_size = window.getFramebufferSize();
 
         var vk_pipeline = try pipeline.Pipeline.init(
-            vk_device.logical,
+            vk_device.handle,
             c.VK_FORMAT_B8G8R8A8_SRGB,
             .{ .width = @intCast(fb_size.width), .height = @intCast(fb_size.height) },
             alloc,
@@ -131,10 +135,10 @@ pub const Context = struct {
         errdefer vk_pipeline.deinit();
 
         var vk_swapchain = try swapchain.Swapchain.init(
-            vk_device.logical,
-            vk_device.queue_indices,
+            vk_device.handle,
+            vk_device.getQueueFamilyIndices(),
             surface,
-            vk_device.physical,
+            vk_device.getPhysicalDeviceHandle(),
             @intCast(fb_size.width),
             @intCast(fb_size.height),
             alloc,
@@ -216,7 +220,7 @@ pub const Context = struct {
         const in_flight_fence = self.inner.sync_objects.in_flight_fences[self.inner.current_frame];
 
         const fence_result = c.vkWaitForFences(
-            self.inner.device.logical,
+            self.inner.device.handle,
             1,
             &in_flight_fence,
             c.VK_TRUE,
@@ -229,7 +233,7 @@ pub const Context = struct {
         }
         try checkVkResult(fence_result);
 
-        try checkVkResult(c.vkResetFences(self.inner.device.logical, 1, &in_flight_fence));
+        try checkVkResult(c.vkResetFences(self.inner.device.handle, 1, &in_flight_fence));
 
         const acquire_result = try self.inner.swapchain.acquireNextImage(image_available);
         if (acquire_result.should_recreate) {
@@ -344,11 +348,11 @@ pub const Context = struct {
     }
 
     pub fn waitIdle(self: *Context) !void {
-        _ = c.vkDeviceWaitIdle(self.inner.device.logical);
+        _ = c.vkDeviceWaitIdle(self.inner.device.handle);
     }
 
     pub fn recreateSwapchain(self: *Context) !void {
-        _ = c.vkDeviceWaitIdle(self.inner.device.logical);
+        _ = c.vkDeviceWaitIdle(self.inner.device.handle);
 
         const fb_size = self.window.getFramebufferSize();
         if (fb_size.width == 0 or fb_size.height == 0) {
@@ -364,10 +368,10 @@ pub const Context = struct {
         config.old_swapchain = old_swapchain.handle;
 
         self.inner.swapchain = try swapchain.Swapchain.init(
-            self.inner.device.logical,
-            self.inner.device.queue_indices,
+            self.inner.device.handle,
+            self.inner.device.getQueueFamilyIndices(),
             self.inner.surface,
-            self.inner.device.physical,
+            self.inner.device.getPhysicalDeviceHandle(),
             @intCast(fb_size.width),
             @intCast(fb_size.height),
             self.allocator,
@@ -395,10 +399,8 @@ pub const Context = struct {
     }
 
     pub fn prepareFirstFrame(self: *Context) !void {
-        // Wait for device to be fully ready
-        try checkVkResult(c.vkDeviceWaitIdle(self.inner.device.logical));
+        try checkVkResult(c.vkDeviceWaitIdle(self.inner.device.handle));
 
-        // Pre-warm the pipeline cache
         const cmd = &self.inner.command_buffers[0];
         try cmd.reset();
         try cmd.begin(c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
@@ -424,7 +426,6 @@ pub const Context = struct {
         c.vkCmdEndRenderPass(cmd.handle);
         try cmd.end();
 
-        // Submit and wait for completion
         const submit_info = c.VkSubmitInfo{
             .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
@@ -444,6 +445,6 @@ pub const Context = struct {
             null,
         ));
 
-        try checkVkResult(c.vkDeviceWaitIdle(self.inner.device.logical));
+        try checkVkResult(c.vkDeviceWaitIdle(self.inner.device.handle));
     }
 };

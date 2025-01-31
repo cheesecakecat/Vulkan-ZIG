@@ -116,30 +116,30 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // // Compile shaders
-    // const shader_step = b.step("shaders", "Compile shaders to SPIR-V");
-    // const shader_dir = "shaders/";
-    // const shaders = [_][]const u8{ "sprite.vert", "sprite.frag" };
+    // Compile shaders
+    const shader_step = b.step("shaders", "Compile shaders to SPIR-V");
+    const shader_dir = "shaders/";
+    const shaders = [_][]const u8{ "sprite.vert", "sprite.frag" };
 
-    // // Create shader output directory
-    // const shader_out_dir = "zig-out/shaders";
-    // std.fs.cwd().makePath(shader_out_dir) catch |err| {
-    //     std.debug.print("Failed to create shader directory: {}\n", .{err});
-    //     return;
-    // };
+    // Create shader output directory
+    const shader_out_dir = "zig-out/shaders";
+    std.fs.cwd().makePath(shader_out_dir) catch |err| {
+        std.debug.print("Failed to create shader directory: {}\n", .{err});
+        return;
+    };
 
-    // inline for (shaders) |shader| {
-    //     const shader_path = shader_dir ++ shader;
-    //     const spv_path = shader_out_dir ++ "/" ++ shader ++ ".spv";
-    //     const shader_compile = b.addSystemCommand(&.{
-    //         "glslc",
-    //         shader_path,
-    //         "-o",
-    //         spv_path,
-    //     });
-    //     shader_step.dependOn(&shader_compile.step);
-    //     exe.step.dependOn(&shader_compile.step);
-    // }
+    inline for (shaders) |shader| {
+        const shader_path = shader_dir ++ shader;
+        const spv_path = shader_out_dir ++ "/" ++ shader ++ ".spv";
+        const shader_compile = b.addSystemCommand(&.{
+            "glslc",
+            shader_path,
+            "-o",
+            spv_path,
+        });
+        shader_step.dependOn(&shader_compile.step);
+        exe.step.dependOn(&shader_compile.step);
+    }
 
     const lib_unit_tests = b.addTest(.{
         .root_module = lib_mod,

@@ -4,7 +4,8 @@ const c = @cImport({
 });
 const glfw = @import("mach-glfw");
 const logger = @import("../core/logger.zig");
-const device = @import("device.zig");
+const device = @import("device/logical.zig");
+const physical = @import("device/physical.zig");
 const commands = @import("commands.zig");
 
 fn checkVkResult(result: c.VkResult) !void {
@@ -416,7 +417,7 @@ pub const Swapchain = struct {
 
     pub fn init(
         logical_device: c.VkDevice,
-        queue_indices: device.QueueFamilyIndices,
+        queue_indices: physical.QueueFamilyIndices,
         surface: c.VkSurfaceKHR,
         physical_device: c.VkPhysicalDevice,
         width: u32,
@@ -428,10 +429,10 @@ pub const Swapchain = struct {
         const self = try alloc.create(Swapchain);
         errdefer alloc.destroy(self);
 
-        const actual_config = config orelse DEFAULT_2D_CONFIG;
-
         var support_details = try SwapChainSupportDetails.init(physical_device, surface, alloc);
         defer support_details.deinit();
+
+        const actual_config = config orelse DEFAULT_2D_CONFIG;
 
         const surface_format = try chooseBestSurfaceFormat(
             support_details.formats,
