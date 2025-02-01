@@ -8,7 +8,6 @@ const c = @cImport({
 });
 const glfw = @import("mach-glfw");
 const logger = @import("engine/core/logger.zig");
-const allocator = @import("engine/core/allocator.zig");
 const vk = @import("engine/vulkan/context.main.zig");
 const vk_types = @import("engine/vulkan/context.types.zig");
 const sprite = @import("engine/vulkan/sprite.zig");

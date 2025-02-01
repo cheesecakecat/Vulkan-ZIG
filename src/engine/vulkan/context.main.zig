@@ -15,6 +15,7 @@ const physical = @import("device/physical.zig");
 const sync = @import("sync.zig");
 const commands = @import("commands.zig");
 const pipeline = @import("pipeline.zig");
+const col3 = @import("../core/math/col3/col3.zig");
 
 fn checkVkResult(result: c.VkResult) !void {
     return switch (result) {
@@ -305,7 +306,7 @@ pub const Context = struct {
         try cmd.begin(c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
         const clear_color = c.VkClearValue{
-            .color = .{ .float32 = .{ 0.0, 0.0, 0.0, 1.0 } },
+            .color = .{ .float32 = col3.Colors.cornflowerBlue.toF32x4(1.0) },
         };
 
         const render_pass_info = c.VkRenderPassBeginInfo{
