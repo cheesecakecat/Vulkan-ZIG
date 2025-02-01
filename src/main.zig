@@ -49,7 +49,7 @@ pub fn main() !void {
         .engine_name = "VK-ZIG Engine",
         .engine_version = ENGINE_VERSION,
         .api_version = c.VK_API_VERSION_1_3,
-        .enable_validation = true,
+        .enable_validation = true, // NOTE: Disable validation in release. It's a massive boost. TODO: Automate to disable in release.
         .enable_debug_utils = true,
         .enable_surface_extensions = true,
         .enable_portability = true,
@@ -85,6 +85,7 @@ pub fn main() !void {
         .instance_config = instance_config,
         .vsync = true,
         .max_frames_in_flight = 2,
+        // TODO: .max_fps = 144,
     }, alloc);
     defer context.deinit();
 
