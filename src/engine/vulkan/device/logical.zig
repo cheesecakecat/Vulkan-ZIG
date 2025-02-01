@@ -11,40 +11,112 @@ const DEDICATED_COMPUTE_PRIORITY: f32 = 0.9;
 const DEDICATED_TRANSFER_PRIORITY: f32 = 0.8;
 
 const DeviceFeatureChain = struct {
-    vulkan_12: c.VkPhysicalDeviceVulkan12Features = .{
-        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-        .pNext = null,
-        .descriptorIndexing = c.VK_TRUE,
-        .descriptorBindingUniformBufferUpdateAfterBind = c.VK_TRUE,
-        .descriptorBindingStorageBufferUpdateAfterBind = c.VK_TRUE,
-        .descriptorBindingSampledImageUpdateAfterBind = c.VK_TRUE,
-        .descriptorBindingStorageImageUpdateAfterBind = c.VK_TRUE,
-        .descriptorBindingUpdateUnusedWhilePending = c.VK_TRUE,
-        .timelineSemaphore = c.VK_TRUE,
-        .bufferDeviceAddress = c.VK_TRUE,
-        .hostQueryReset = c.VK_TRUE,
-        .shaderSampledImageArrayNonUniformIndexing = c.VK_TRUE,
-        .shaderStorageBufferArrayNonUniformIndexing = c.VK_TRUE,
-    },
-    vulkan_13: c.VkPhysicalDeviceVulkan13Features = .{
-        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        .pNext = null,
-        .dynamicRendering = c.VK_TRUE,
-        .synchronization2 = c.VK_TRUE,
-        .maintenance4 = c.VK_TRUE,
-    },
-    robustness2: c.VkPhysicalDeviceRobustness2FeaturesEXT = .{
-        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
-        .pNext = null,
-        .robustBufferAccess2 = c.VK_TRUE,
-        .robustImageAccess2 = c.VK_TRUE,
-        .nullDescriptor = c.VK_TRUE,
-    },
-    memory: c.VkPhysicalDeviceMemoryPriorityFeaturesEXT = .{
-        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,
-        .pNext = null,
-        .memoryPriority = c.VK_TRUE,
-    },
+    vulkan_12: c.VkPhysicalDeviceVulkan12Features,
+    vulkan_13: c.VkPhysicalDeviceVulkan13Features,
+    robustness2: c.VkPhysicalDeviceRobustness2FeaturesEXT,
+    memory: c.VkPhysicalDeviceMemoryPriorityFeaturesEXT,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, config: Config) !*DeviceFeatureChain {
+        const self = try allocator.create(DeviceFeatureChain);
+        errdefer allocator.destroy(self);
+
+        self.* = .{
+            .allocator = allocator,
+            .vulkan_12 = .{
+                .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                .pNext = null,
+                .descriptorIndexing = c.VK_FALSE,
+                .descriptorBindingUniformBufferUpdateAfterBind = c.VK_FALSE,
+                .descriptorBindingStorageBufferUpdateAfterBind = c.VK_FALSE,
+                .descriptorBindingSampledImageUpdateAfterBind = c.VK_FALSE,
+                .descriptorBindingStorageImageUpdateAfterBind = c.VK_FALSE,
+                .descriptorBindingUpdateUnusedWhilePending = c.VK_FALSE,
+                .timelineSemaphore = c.VK_FALSE,
+                .bufferDeviceAddress = c.VK_FALSE,
+                .hostQueryReset = c.VK_FALSE,
+                .shaderSampledImageArrayNonUniformIndexing = c.VK_FALSE,
+                .shaderStorageBufferArrayNonUniformIndexing = c.VK_FALSE,
+            },
+            .vulkan_13 = .{
+                .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                .pNext = null,
+                .dynamicRendering = c.VK_FALSE,
+                .synchronization2 = c.VK_FALSE,
+                .maintenance4 = c.VK_FALSE,
+            },
+            .robustness2 = .{
+                .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+                .pNext = null,
+                .robustBufferAccess2 = c.VK_FALSE,
+                .robustImageAccess2 = c.VK_FALSE,
+                .nullDescriptor = c.VK_FALSE,
+            },
+            .memory = .{
+                .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT,
+                .pNext = null,
+                .memoryPriority = c.VK_FALSE,
+            },
+        };
+
+        // Only enable features based on config
+        if (config.enable_descriptor_indexing) {
+            self.vulkan_12.descriptorIndexing = c.VK_TRUE;
+            self.vulkan_12.descriptorBindingUniformBufferUpdateAfterBind = c.VK_TRUE;
+            self.vulkan_12.descriptorBindingStorageBufferUpdateAfterBind = c.VK_TRUE;
+            self.vulkan_12.descriptorBindingSampledImageUpdateAfterBind = c.VK_TRUE;
+            self.vulkan_12.descriptorBindingStorageImageUpdateAfterBind = c.VK_TRUE;
+            self.vulkan_12.descriptorBindingUpdateUnusedWhilePending = c.VK_TRUE;
+        }
+
+        if (config.enable_timeline_semaphores) {
+            self.vulkan_12.timelineSemaphore = c.VK_TRUE;
+        }
+
+        if (config.enable_buffer_device_address) {
+            self.vulkan_12.bufferDeviceAddress = c.VK_TRUE;
+        }
+
+        if (config.enable_host_query_reset) {
+            self.vulkan_12.hostQueryReset = c.VK_TRUE;
+        }
+
+        if (config.enable_dynamic_rendering) {
+            self.vulkan_13.dynamicRendering = c.VK_TRUE;
+        }
+
+        if (config.enable_synchronization2) {
+            self.vulkan_13.synchronization2 = c.VK_TRUE;
+        }
+
+        if (config.enable_maintenance4) {
+            self.vulkan_13.maintenance4 = c.VK_TRUE;
+        }
+
+        if (config.enable_robustness) {
+            self.robustness2.robustBufferAccess2 = c.VK_TRUE;
+            self.robustness2.robustImageAccess2 = c.VK_TRUE;
+        }
+
+        if (config.enable_null_descriptors) {
+            self.robustness2.nullDescriptor = c.VK_TRUE;
+        }
+
+        if (config.enable_memory_priority) {
+            self.memory.memoryPriority = c.VK_TRUE;
+        }
+
+        // Set up the feature chain
+        self.vulkan_13.pNext = &self.vulkan_12;
+        self.vulkan_12.pNext = &self.robustness2;
+        self.robustness2.pNext = &self.memory;
+
+        return self;
+    }
+
+    pub fn deinit(self: *DeviceFeatureChain) void {
+        self.allocator.destroy(self);
+    }
 };
 
 const QueueConfig = struct {
@@ -132,7 +204,7 @@ const Queues = struct {
             if (queue.family) |family| {
                 c.vkGetDeviceQueue(device, family, 0, queue.handle);
                 if (queue.handle.* == null) {
-                    logger.err("Failed to get {s} queue handle", .{queue.name});
+                    logger.err("device.logical: failed to get {s} queue handle", .{queue.name});
                     return error.QueueCreationFailed;
                 }
             }
@@ -143,7 +215,7 @@ const Queues = struct {
         c.vkGetPhysicalDeviceQueueFamilyProperties(phys_device, &queue_count, &queue_props);
 
         if (queue_count == 0) {
-            logger.err("No queue families available", .{});
+            logger.err("device.logical: no queue families available", .{});
             return error.NoQueueFamiliesAvailable;
         }
 
@@ -194,7 +266,7 @@ const Queues = struct {
     }
 
     fn logInfo(self: *const Queues) void {
-        logger.info("Queue Configuration:", .{});
+        logger.info("device.logical: queue Configuration:", .{});
         inline for (.{
             .{ .name = "Graphics", .queue = self.graphics },
             .{ .name = "Compute", .queue = self.compute },
@@ -225,6 +297,7 @@ pub const Device = struct {
     api_version: u32,
     graphics_queue: c.VkQueue,
     present_queue: c.VkQueue,
+    feature_chain: *DeviceFeatureChain,
 
     pub fn getPhysicalDeviceHandle(self: *const Device) c.VkPhysicalDevice {
         return self.physical_device.handle;
@@ -247,13 +320,13 @@ pub const Device = struct {
             if (queue.family) |family| {
                 try unique_families.put(family, {});
             } else {
-                logger.err("Missing required {s} queue family", .{queue.name});
+                logger.err("device.logical: missing required {s} queue family", .{queue.name});
                 return error.MissingRequiredQueueFamily;
             }
         }
 
         if (unique_families.count() > MAX_QUEUE_COUNT) {
-            logger.err("Too many unique queue families: {d} (max {d})", .{ unique_families.count(), MAX_QUEUE_COUNT });
+            logger.err("device.logical: too many unique queue families: {d} (max {d})", .{ unique_families.count(), MAX_QUEUE_COUNT });
             return error.TooManyQueueFamilies;
         }
 
@@ -273,10 +346,8 @@ pub const Device = struct {
             });
         }
 
-        var feature_chain = DeviceFeatureChain{};
-        feature_chain.vulkan_13.pNext = &feature_chain.vulkan_12;
-        feature_chain.vulkan_12.pNext = &feature_chain.robustness2;
-        feature_chain.robustness2.pNext = &feature_chain.memory;
+        const feature_chain = try DeviceFeatureChain.init(allocator, config);
+        errdefer feature_chain.deinit();
 
         const enabled_features = if (config.features) |features| features else phys_device.features;
 
@@ -287,7 +358,7 @@ pub const Device = struct {
             if (ext.required) {
                 const name = std.mem.span(ext.name);
                 if (!try validateExtension(phys_device.handle, name, allocator)) {
-                    logger.err("Required extension not supported: {s}", .{name});
+                    logger.err("device.logical: required extension not supported: {s}", .{name});
                     return error.RequiredExtensionNotSupported;
                 }
                 try enabled_extensions.put(name, ext.name);
@@ -300,7 +371,7 @@ pub const Device = struct {
                 if (try validateExtension(phys_device.handle, name, allocator)) {
                     try enabled_extensions.put(name, ext_name);
                 } else {
-                    logger.warn("Optional extension not supported: {s}", .{name});
+                    logger.warn("device.logical: optional extension not supported: {s}", .{name});
                 }
             }
         }
@@ -330,11 +401,13 @@ pub const Device = struct {
         var device: c.VkDevice = undefined;
         const result = c.vkCreateDevice(phys_device.handle, &device_create_info, null, &device);
         if (result != c.VK_SUCCESS) {
-            logger.err("Failed to create logical device: {s}", .{getVulkanResultString(result)});
+            feature_chain.deinit();
+            logger.err("device.logical: failed to create logical device: {s}", .{getVulkanResultString(result)});
             return error.DeviceCreationFailed;
         }
 
         const queues = Queues.init(device, phys_device.queue_families, &queue_priorities, phys_device.handle) catch |err| {
+            feature_chain.deinit();
             c.vkDestroyDevice(device, null);
             return err;
         };
@@ -349,6 +422,7 @@ pub const Device = struct {
             .api_version = phys_device.properties.apiVersion,
             .graphics_queue = queues.graphics.handle,
             .present_queue = queues.present.handle,
+            .feature_chain = feature_chain,
         };
 
         result_device.logDeviceInfo();
@@ -393,7 +467,7 @@ pub const Device = struct {
     }
 
     fn logDeviceInfo(self: *const Device) void {
-        logger.info("Logical Device Created:", .{});
+        logger.info("device.logical: logical device created:", .{});
         logger.info("  API Version: {d}.{d}.{d}", .{
             c.VK_VERSION_MAJOR(self.api_version),
             c.VK_VERSION_MINOR(self.api_version),
@@ -424,18 +498,19 @@ pub const Device = struct {
 
     pub fn deinit(self: *Device) void {
         if (c.vkDeviceWaitIdle(self.handle) != c.VK_SUCCESS) {
-            logger.err("Failed to wait for device idle during cleanup", .{});
+            logger.err("device.logical: failed to wait for device idle during cleanup", .{});
         }
 
+        self.feature_chain.deinit();
         self.enabled_extensions.deinit();
-        self.physical_device.deinit(self.allocator);
+        self.allocator.destroy(self.physical_device);
         c.vkDestroyDevice(self.handle, null);
     }
 
     pub fn waitIdle(self: *Device) !void {
         const result = c.vkDeviceWaitIdle(self.handle);
         if (result != c.VK_SUCCESS) {
-            logger.err("Failed to wait for device idle: {s}", .{getVulkanResultString(result)});
+            logger.err("device.logical: failed to wait for device idle: {s}", .{getVulkanResultString(result)});
             return error.DeviceWaitIdleFailed;
         }
     }
@@ -443,7 +518,7 @@ pub const Device = struct {
     pub fn getGraphicsQueue(self: *const Device) QueueHandle {
         const queue = self.queues.graphics;
         if (!queue.supportsGraphics()) {
-            logger.warn("Accessing graphics queue without graphics capability", .{});
+            logger.warn("device.logical: accessing graphics queue without graphics capability", .{});
         }
         return queue;
     }
@@ -451,7 +526,7 @@ pub const Device = struct {
     pub fn getComputeQueue(self: *const Device) QueueHandle {
         const queue = self.queues.compute;
         if (!queue.supportsCompute()) {
-            logger.warn("Accessing compute queue without compute capability", .{});
+            logger.warn("device.logical: accessing compute queue without compute capability", .{});
         }
         return queue;
     }
@@ -459,7 +534,7 @@ pub const Device = struct {
     pub fn getTransferQueue(self: *const Device) QueueHandle {
         const queue = self.queues.transfer;
         if (!queue.supportsTransfer()) {
-            logger.warn("Accessing transfer queue without transfer capability", .{});
+            logger.warn("device.logical: accessing transfer queue without transfer capability", .{});
         }
         return queue;
     }

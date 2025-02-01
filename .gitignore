@@ -38,3 +38,6 @@ test-tmp/
 # Log files
 *.log
 logs/
+
+# Ignore pipeline cache
+pipeline_cache.bin

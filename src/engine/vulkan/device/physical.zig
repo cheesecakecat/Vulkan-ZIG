@@ -268,7 +268,7 @@ const DeviceScore = struct {
             const required = @field(REQUIRED_FEATURES, field.name);
             const available = @field(self.features, field.name);
             if (required == c.VK_TRUE and available != c.VK_TRUE) {
-                logger.warn("device: missing required feature: {s}", .{field.name});
+                logger.warn("device.physical: missing required feature: {s}", .{field.name});
                 return false;
             }
         }
@@ -286,7 +286,7 @@ const DeviceScore = struct {
                     }
                 }
                 if (!has_alternative) {
-                    logger.warn("device: missing required extension: {s}", .{name});
+                    logger.warn("device.physical: missing required extension: {s}", .{name});
                     return false;
                 }
             }
@@ -301,13 +301,13 @@ const DeviceScore = struct {
 
         const device_memory_gb = @divFloor(device_local_memory, 1024 * 1024 * 1024);
         if (device_memory_gb < OPTIMAL_LIMITS.MIN_MEMORY_GB) {
-            logger.warn("device: insufficient device local memory: {d}GB (minimum {d}GB)", .{ device_memory_gb, OPTIMAL_LIMITS.MIN_MEMORY_GB });
+            logger.warn("device.physical: insufficient device local memory: {d}GB (minimum {d}GB)", .{ device_memory_gb, OPTIMAL_LIMITS.MIN_MEMORY_GB });
             return false;
         }
 
         const limits = self.properties.limits;
         if (limits.maxUniformBufferRange < OPTIMAL_LIMITS.MIN_UNIFORM_BUFFER_RANGE) {
-            logger.warn("device: insufficient uniform buffer range", .{});
+            logger.warn("device.physical: insufficient uniform buffer range", .{});
             return false;
         }
         if (limits.maxStorageBufferRange < OPTIMAL_LIMITS.MIN_STORAGE_BUFFER_RANGE) {
@@ -323,7 +323,7 @@ const DeviceScore = struct {
     }
 
     pub fn logSpecs(self: *const DeviceScore) void {
-        logger.info("Physical Device: {s} ({s})", .{
+        logger.info("device.physical: physical Device: {s} ({s})", .{
             self.properties.deviceName,
             self.vendor_name,
         });
@@ -406,7 +406,7 @@ pub const PhysicalDevice = struct {
         }
 
         if (device_count == 0) {
-            logger.err("vulkan: no physical devices found", .{});
+            logger.err("device.physical: no physical devices found", .{});
             return error.NoPhysicalDevicesFound;
         }
 
@@ -417,7 +417,7 @@ pub const PhysicalDevice = struct {
             return error.PhysicalDeviceEnumerationFailed;
         }
 
-        logger.info("vulkan: found {d} physical device(s)", .{device_count});
+        logger.info("device.physical: found {d} physical device(s)", .{device_count});
 
         var device_scores = try allocator.alloc(DeviceScore, device_count);
         defer allocator.free(device_scores);
@@ -434,7 +434,7 @@ pub const PhysicalDevice = struct {
             device_scores[i] = try DeviceScore.init(device, allocator);
 
             if (!device_scores[i].meetsRequirements()) {
-                logger.warn("vulkan: device '{s}' does not meet requirements", .{device_scores[i].properties.deviceName});
+                logger.warn("device.physical: device '{s}' does not meet requirements", .{device_scores[i].properties.deviceName});
                 continue;
             }
 
@@ -447,11 +447,11 @@ pub const PhysicalDevice = struct {
         }
 
         if (best_device == null) {
-            logger.err("vulkan: no suitable physical device found", .{});
+            logger.err("device.physical: no suitable physical device found", .{});
             return error.NoSuitablePhysicalDevice;
         }
 
-        logger.info("vulkan: selected physical device: {s}", .{best_device.?.properties.deviceName});
+        logger.info("device.physical: selected physical device: {s}", .{best_device.?.properties.deviceName});
 
         const result = try allocator.create(PhysicalDevice);
         errdefer allocator.destroy(result);
@@ -465,10 +465,6 @@ pub const PhysicalDevice = struct {
         };
 
         return result;
-    }
-
-    pub fn deinit(self: *PhysicalDevice, allocator: std.mem.Allocator) void {
-        allocator.destroy(self);
     }
 };
 
@@ -517,7 +513,7 @@ pub const QueueFamilyIndices = struct {
                     .compute_family = idx,
                     .transfer_family = idx,
                 };
-                logger.info("vulkan: found unified queue family at index {d}", .{idx});
+                logger.info("device.physical: found unified queue family at index {d}", .{idx});
                 return indices;
             }
         }
@@ -527,20 +523,20 @@ pub const QueueFamilyIndices = struct {
 
             if (indices.graphics_family == null and family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT != 0) {
                 indices.graphics_family = idx;
-                logger.info("vulkan: found graphics queue family at index {d}", .{idx});
+                logger.info("device.physical: found graphics queue family at index {d}", .{idx});
             }
 
             if (indices.compute_family == null and family.queueFlags & c.VK_QUEUE_COMPUTE_BIT != 0) {
                 if (family.queueFlags & c.VK_QUEUE_GRAPHICS_BIT == 0) {
                     indices.compute_family = idx;
-                    logger.info("vulkan: found dedicated compute queue family at index {d}", .{idx});
+                    logger.info("device.physical: found dedicated compute queue family at index {d}", .{idx});
                 }
             }
 
             if (indices.transfer_family == null and family.queueFlags & c.VK_QUEUE_TRANSFER_BIT != 0) {
                 if (family.queueFlags & (c.VK_QUEUE_GRAPHICS_BIT | c.VK_QUEUE_COMPUTE_BIT) == 0) {
                     indices.transfer_family = idx;
-                    logger.info("vulkan: found dedicated transfer queue family at index {d}", .{idx});
+                    logger.info("device.physical: found dedicated transfer queue family at index {d}", .{idx});
                 }
             }
 
@@ -549,22 +545,22 @@ pub const QueueFamilyIndices = struct {
 
             if (indices.present_family == null and present_support == c.VK_TRUE) {
                 indices.present_family = idx;
-                logger.info("vulkan: found present queue family at index {d}", .{idx});
+                logger.info("device.physical: found present queue family at index {d}", .{idx});
             }
         }
 
         if (indices.compute_family == null) {
             indices.compute_family = indices.graphics_family;
-            logger.info("vulkan: using graphics queue for compute operations", .{});
+            logger.info("device.physical: using graphics queue for compute operations", .{});
         }
 
         if (indices.transfer_family == null) {
             indices.transfer_family = indices.graphics_family;
-            logger.info("vulkan: using graphics queue for transfer operations", .{});
+            logger.info("device.physical: using graphics queue for transfer operations", .{});
         }
 
         if (!indices.isComplete()) {
-            logger.err("vulkan: failed to find required queue families", .{});
+            logger.err("device.physical: failed to find required queue families", .{});
             return error.NoSuitableQueueFamilies;
         }
 

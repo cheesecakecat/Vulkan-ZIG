@@ -839,60 +839,40 @@ pub const Instance = struct {
     }
 
     fn validateRequiredExtensionsAndLayers(self: *Instance) !void {
-        var dep_graph = std.ArrayList([]const u8).init(self.allocator);
-        defer dep_graph.deinit();
+        logger.debug("vulkan: validating required extensions and layers", .{});
+        self.extensions.enabled.count.store(0, .release);
+        self.extensions.layers.count.store(0, .release);
+
+        if (self.config.enable_validation) {
+            const validation_layer = "VK_LAYER_KHRONOS_validation";
+            if (!self.extensions.available.contains(validation_layer)) {
+                logger.warn("vulkan: validation layer not available, disabling validation", .{});
+                self.config.enable_validation = false;
+            } else {
+                logger.debug("vulkan: found validation layer: {s}", .{validation_layer});
+                _ = try self.extensions.layers.add(validation_layer);
+
+                const debug_utils_ext = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+                if (!self.extensions.available.contains(debug_utils_ext)) {
+                    logger.warn("vulkan: debug utils extension not available, disabling validation", .{});
+                    self.config.enable_validation = false;
+                } else {
+                    logger.debug("vulkan: found debug extension: {s}", .{debug_utils_ext});
+                    _ = try self.extensions.enabled.add(debug_utils_ext);
+                }
+            }
+        }
 
         if (glfw.getRequiredInstanceExtensions()) |glfw_extensions| {
             logger.debug("vulkan: GLFW required extensions:", .{});
             for (glfw_extensions) |ext| {
                 const ext_str = std.mem.span(ext);
                 logger.debug("  - {s}", .{ext_str});
-                try dep_graph.append(ext_str);
+                _ = try self.extensions.enabled.add(ext_str);
             }
         } else {
             logger.err("vulkan: GLFW did not return any required extensions", .{});
             return error.RequiredExtensionNotAvailable;
-        }
-
-        if (self.config.enable_validation) {
-            try dep_graph.append(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        }
-
-        for (dep_graph.items) |ext| {
-            logger.debug("vulkan: checking required extension: {s}", .{ext});
-            if (!self.extensions.available.contains(ext)) {
-                var found = false;
-                for (EXTENSION_DEPENDENCIES) |dep| {
-                    if (std.mem.eql(u8, dep.name, ext)) {
-                        for (dep.alternatives) |alt| {
-                            if (self.extensions.available.contains(alt)) {
-                                _ = try self.extensions.enabled.add(alt);
-                                found = true;
-                                logger.debug("vulkan: using alternative extension {s} for {s}", .{ alt, ext });
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (!found) {
-                    logger.err("vulkan: required extension {s} not available", .{ext});
-                    return error.RequiredExtensionNotAvailable;
-                }
-            } else {
-                logger.debug("vulkan: enabling extension {s}", .{ext});
-                _ = try self.extensions.enabled.add(ext);
-            }
-        }
-
-        self.extensions.layers.count.store(0, .release);
-
-        if (self.config.enable_validation) {
-            const validation_layer = "VK_LAYER_KHRONOS_validation";
-            if (!self.extensions.available.contains(validation_layer)) {
-                logger.err("vulkan: validation layer not available", .{});
-                return error.ValidationLayerNotAvailable;
-            }
-            _ = try self.extensions.layers.add(validation_layer);
         }
 
         for (self.config.required_layers) |layer| {
@@ -901,6 +881,7 @@ pub const Instance = struct {
                 logger.err("vulkan: required layer {s} not available", .{layer_name});
                 return error.RequiredLayerNotAvailable;
             }
+            logger.debug("vulkan: found required layer: {s}", .{layer_name});
             _ = try self.extensions.layers.add(layer_name);
         }
 
@@ -918,9 +899,11 @@ pub const Instance = struct {
     }
 
     fn createInstance(self: *Instance) !void {
+        logger.debug("vulkan: starting instance creation", .{});
         var validation_features_storage: ?c.VkValidationFeaturesEXT = null;
 
         if (self.config.enable_validation) {
+            logger.debug("vulkan: setting up validation features", .{});
             self.config.validation_features = ValidationFeatures.init();
             validation_features_storage = self.config.validation_features.getCreateInfo();
         }
@@ -935,8 +918,29 @@ pub const Instance = struct {
             .pNext = null,
         };
 
+        logger.debug("vulkan: application info:", .{});
+        logger.debug("  - application name: {s}", .{self.config.application_name});
+        logger.debug("  - application version: {}.{}.{}", .{
+            c.VK_VERSION_MAJOR(self.config.application_version),
+            c.VK_VERSION_MINOR(self.config.application_version),
+            c.VK_VERSION_PATCH(self.config.application_version),
+        });
+        logger.debug("  - engine name: {s}", .{self.config.engine_name});
+        logger.debug("  - engine version: {}.{}.{}", .{
+            c.VK_VERSION_MAJOR(self.config.engine_version),
+            c.VK_VERSION_MINOR(self.config.engine_version),
+            c.VK_VERSION_PATCH(self.config.engine_version),
+        });
+        logger.debug("  - API version: {}.{}.{}", .{
+            c.VK_VERSION_MAJOR(self.api_version),
+            c.VK_VERSION_MINOR(self.api_version),
+            c.VK_VERSION_PATCH(self.api_version),
+        });
+
         const enabled_count = self.extensions.enabled.count.load(.acquire);
         const layer_count = self.extensions.layers.count.load(.acquire);
+
+        logger.debug("vulkan: preparing to enable {} extensions and {} layers", .{ enabled_count, layer_count });
 
         var extension_names = try self.allocator.alloc([*:0]const u8, enabled_count + @intFromBool(self.config.enable_portability));
         defer self.allocator.free(extension_names);
@@ -949,14 +953,21 @@ pub const Instance = struct {
             @memcpy(extension_strings[start .. start + entry.len], entry.data[0..entry.len]);
             extension_strings[start + entry.len] = 0;
             extension_names[i] = @ptrCast(extension_strings[start .. start + entry.len :0]);
+            logger.debug("vulkan: enabling extension: {s}", .{entry.data[0..entry.len]});
         }
 
         if (self.config.enable_portability) {
             const portability_ext = "VK_KHR_portability_enumeration";
-            const start = enabled_count * StringCache.MAX_STRING_LENGTH;
-            @memcpy(extension_strings[start .. start + portability_ext.len], portability_ext);
-            extension_strings[start + portability_ext.len] = 0;
-            extension_names[enabled_count] = @ptrCast(extension_strings[start .. start + portability_ext.len :0]);
+            if (self.extensions.available.contains(portability_ext)) {
+                logger.debug("vulkan: enabling portability extension", .{});
+                const start = enabled_count * StringCache.MAX_STRING_LENGTH;
+                @memcpy(extension_strings[start .. start + portability_ext.len], portability_ext);
+                extension_strings[start + portability_ext.len] = 0;
+                extension_names[enabled_count] = @ptrCast(extension_strings[start .. start + portability_ext.len :0]);
+            } else {
+                logger.debug("vulkan: portability extension not available, skipping", .{});
+                self.config.enable_portability = false;
+            }
         }
 
         var layer_names = try self.allocator.alloc([*:0]const u8, layer_count);
@@ -970,6 +981,7 @@ pub const Instance = struct {
             @memcpy(layer_strings[start .. start + entry.len], entry.data[0..entry.len]);
             layer_strings[start + entry.len] = 0;
             layer_names[i] = @ptrCast(layer_strings[start .. start + entry.len :0]);
+            logger.debug("vulkan: enabling layer: {s}", .{entry.data[0..entry.len]});
         }
 
         const create_info = c.VkInstanceCreateInfo{
@@ -983,7 +995,24 @@ pub const Instance = struct {
             .pNext = if (validation_features_storage) |*vf| @ptrCast(vf) else null,
         };
 
-        if (c.vkCreateInstance(&create_info, self.config.allocation_callbacks, &self.handle) != c.VK_SUCCESS) {
+        logger.debug("vulkan: attempting to create instance", .{});
+        const result = c.vkCreateInstance(&create_info, self.config.allocation_callbacks, &self.handle);
+        if (result != c.VK_SUCCESS) {
+            logger.err("vulkan: instance creation failed with error code: {} ({s})", .{ result, switch (result) {
+                c.VK_ERROR_OUT_OF_HOST_MEMORY => "VK_ERROR_OUT_OF_HOST_MEMORY",
+                c.VK_ERROR_OUT_OF_DEVICE_MEMORY => "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+                c.VK_ERROR_INITIALIZATION_FAILED => "VK_ERROR_INITIALIZATION_FAILED",
+                c.VK_ERROR_LAYER_NOT_PRESENT => "VK_ERROR_LAYER_NOT_PRESENT",
+                c.VK_ERROR_EXTENSION_NOT_PRESENT => "VK_ERROR_EXTENSION_NOT_PRESENT",
+                c.VK_ERROR_INCOMPATIBLE_DRIVER => "VK_ERROR_INCOMPATIBLE_DRIVER",
+                else => "Unknown error",
+            } });
+
+            logger.err("vulkan: attempted to enable the following layers:", .{});
+            for (0..layer_count) |i| {
+                logger.err("  - {s}", .{layer_names[i]});
+            }
+
             return error.InstanceCreationFailed;
         }
 

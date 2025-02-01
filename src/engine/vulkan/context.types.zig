@@ -27,7 +27,7 @@ pub const Context = struct {
     device: device.Device,
     swapchain: swapchain.Swapchain,
     sync_objects: sync.SyncObjects,
-    command_pool: commands.CommandPool,
+    command_pool: commands.CommandSystem.CommandPool,
     pipeline: *pipeline.Pipeline,
     window: glfw.Window,
     allocator: std.mem.Allocator,

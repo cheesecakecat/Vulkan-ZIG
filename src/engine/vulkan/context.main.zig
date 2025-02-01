@@ -32,7 +32,7 @@ fn checkVkResult(result: c.VkResult) !void {
     };
 }
 
-fn createSurface(vk_instance: ?*c.struct_VkInstance_T, window: glfw.Window) !c.VkSurfaceKHR {
+fn createSurface(vk_instance: c.VkInstance, window: glfw.Window) !c.VkSurfaceKHR {
     var surface: c.VkSurfaceKHR = undefined;
     const result = glfw.createWindowSurface(
         vk_instance,
@@ -53,11 +53,12 @@ pub const Context = struct {
     inner: struct {
         instance: instance.Instance,
         surface: c.VkSurfaceKHR,
+        physical_device: *physical.PhysicalDevice,
         device: device.Device,
         swapchain: *swapchain.Swapchain,
         sync_objects: sync.SyncObjects,
-        command_pool: commands.CommandPool,
-        command_buffers: []commands.CommandBuffer,
+        command_pool: commands.CommandSystem.CommandPool,
+        command_buffers: []commands.CommandSystem.CommandBuffer,
         pipeline: *pipeline.Pipeline,
         current_frame: u32,
         projection: [4][4]f32,
@@ -79,10 +80,22 @@ pub const Context = struct {
         const surface = try createSurface(vk_instance.handle, window);
         errdefer c.vkDestroySurfaceKHR(vk_instance.handle, surface, null);
 
-        var phys_device = try physical.PhysicalDevice.selectBest(vk_instance.handle, surface, alloc);
-        errdefer phys_device.deinit(alloc);
+        const phys_device = try physical.PhysicalDevice.selectBest(vk_instance.handle, surface, alloc);
 
-        var vk_device = try device.Device.init(phys_device, .{}, alloc);
+        var vk_device = try device.Device.init(phys_device, .{
+            .enable_robustness = false,
+            .enable_dynamic_rendering = false,
+            .enable_timeline_semaphores = false,
+            .enable_synchronization2 = false,
+            .enable_buffer_device_address = false,
+            .enable_memory_priority = false,
+            .enable_memory_budget = false,
+            .enable_descriptor_indexing = false,
+            .enable_maintenance4 = false,
+            .enable_null_descriptors = false,
+            .enable_shader_draw_parameters = false,
+            .enable_host_query_reset = false,
+        }, alloc);
         errdefer vk_device.deinit();
 
         var vk_sync = try sync.SyncObjects.init(
@@ -96,6 +109,7 @@ pub const Context = struct {
             .inner = .{
                 .instance = vk_instance,
                 .surface = surface,
+                .physical_device = phys_device,
                 .device = vk_device,
                 .swapchain = undefined,
                 .sync_objects = vk_sync,
@@ -110,19 +124,31 @@ pub const Context = struct {
             .allocator = alloc,
         };
 
-        self.inner.command_pool = try commands.CommandPool.init(
+        self.inner.command_pool = try commands.CommandSystem.CommandPool.init(
             vk_device.handle,
-            vk_device.getQueueFamilyIndices().graphics_family.?,
+            vk_instance.handle,
+            self.allocator,
+            .{
+                .queue_family_index = vk_device.getQueueFamilyIndices().graphics_family.?,
+                .thread_safe = true,
+                .enable_validation = config.instance_config.enable_validation,
+                .enable_metrics = true,
+            },
         );
         errdefer self.inner.command_pool.deinit();
 
-        const command_buffers = try alloc.alloc(commands.CommandBuffer, config.max_frames_in_flight);
+        const command_buffers = try alloc.alloc(commands.CommandSystem.CommandBuffer, config.max_frames_in_flight);
         errdefer alloc.free(command_buffers);
 
         for (command_buffers) |*cmd_buf| {
-            cmd_buf.* = try commands.CommandBuffer.init(&self.inner.command_pool, c.VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+            const buffer = try self.inner.command_pool.acquireBuffer(.{
+                .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .usage = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                .enable_validation = config.instance_config.enable_validation,
+            });
+            cmd_buf.* = buffer;
         }
-        errdefer for (command_buffers) |*cmd_buf| cmd_buf.deinit();
+        errdefer for (command_buffers) |*cmd_buf| self.inner.command_pool.releaseBuffer(cmd_buf);
 
         const fb_size = window.getFramebufferSize();
 
@@ -149,8 +175,8 @@ pub const Context = struct {
 
         const projection = math.ortho(0, @floatFromInt(fb_size.width), @floatFromInt(fb_size.height), 0);
 
-        logger.debug("Framebuffer size: {}x{}", .{ fb_size.width, fb_size.height });
-        logger.debug("Projection matrix:", .{});
+        logger.debug("framebuffer size: {}x{}", .{ fb_size.width, fb_size.height });
+        logger.debug("projection matrix:", .{});
         logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(0, 0), projection.get(0, 1), projection.get(0, 2), projection.get(0, 3) });
         logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(1, 0), projection.get(1, 1), projection.get(1, 2), projection.get(1, 3) });
         logger.debug("  [{d:>10.4}, {d:>10.4}, {d:>10.4}, {d:>10.4}]", .{ projection.get(2, 0), projection.get(2, 1), projection.get(2, 2), projection.get(2, 3) });
@@ -166,7 +192,7 @@ pub const Context = struct {
 
     pub fn deinit(self: *Context) void {
         for (self.inner.command_buffers) |*cmd_buf| {
-            cmd_buf.deinit();
+            self.inner.command_pool.releaseBuffer(cmd_buf);
         }
         self.allocator.free(self.inner.command_buffers);
         self.inner.pipeline.deinit();
@@ -174,6 +200,7 @@ pub const Context = struct {
         self.inner.sync_objects.deinit();
         self.inner.swapchain.deinit();
         self.inner.device.deinit();
+
         c.vkDestroySurfaceKHR(self.inner.instance.handle, self.inner.surface, null);
         self.allocator.destroy(self);
     }
@@ -293,13 +320,24 @@ pub const Context = struct {
             &self.inner.projection,
         );
 
-        const vertex_buffers = [_]c.VkBuffer{sprite_batch.vertex_buffer.handle};
-        const offsets = [_]c.VkDeviceSize{0};
-        c.vkCmdBindVertexBuffers(cmd.handle, 0, 1, &vertex_buffers, &offsets);
+        const vertex_buffers = [_]c.VkBuffer{
+            sprite_batch.vertex_buffer.handle,
+            sprite_batch.instance_buffer.handle,
+        };
+        const offsets = [_]c.VkDeviceSize{ 0, 0 };
+
+        c.vkCmdBindVertexBuffers(cmd.handle, 0, 2, &vertex_buffers, &offsets);
         c.vkCmdBindIndexBuffer(cmd.handle, sprite_batch.index_buffer.handle, 0, c.VK_INDEX_TYPE_UINT32);
 
-        if (sprite_batch.sprite_count > 0) {
-            c.vkCmdDrawIndexed(cmd.handle, sprite_batch.sprite_count * 6, 1, 0, 0, 0);
+        for (sprite_batch.draw_calls.items) |draw_call| {
+            c.vkCmdDrawIndexed(
+                cmd.handle,
+                draw_call.index_count,
+                draw_call.instance_count,
+                draw_call.first_index,
+                0,
+                0,
+            );
         }
 
         c.vkCmdEndRenderPass(cmd.handle);

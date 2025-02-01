@@ -131,16 +131,14 @@ pub fn main() !void {
 
     var sprite_batch = try sprite.SpriteBatch.init(
         context.inner.device.handle,
-        context.inner.device.physical_device,
+        context.inner.instance.handle,
+        context.inner.device.getPhysicalDeviceHandle(),
         context.inner.device.queues.graphics.family,
-        null,
-        10000,
+        10000, // Default max sprites
+        null, // No compute shader for now
         alloc,
     );
     defer sprite_batch.deinit();
-
-    const color = [4]f32{ 1.0, 0.0, 0.5, 1.0 };
-    const uv_rect = [4]f32{ 0.0, 0.0, 1.0, 1.0 };
 
     var last_time = std.time.milliTimestamp();
     var frame_count: u32 = 0;
@@ -162,26 +160,6 @@ pub fn main() !void {
             frame_count = 0;
         }
 
-        try sprite_batch.begin();
-
-        var y: f32 = 100;
-        while (y < 500) : (y += 50) {
-            var x: f32 = 100;
-            while (x < 700) : (x += 50) {
-                try sprite_batch.draw(
-                    .{ x, y },
-                    .{ 40, 40 },
-                    0,
-                    color,
-                    0,
-                    uv_rect,
-                    0.0,
-                    0,
-                );
-            }
-        }
-
-        try sprite_batch.end();
         try context.endFrame(sprite_batch);
 
         instance.update();
