@@ -3,7 +3,7 @@ const math = std.math;
 const mem = std.mem;
 const fmt = std.fmt;
 
-pub const Colors = @import("premade.zig").Colors;
+pub const Colors = @import("predefined.zig").Colors;
 
 pub const ColorError = error{
     InvalidHexLength,
