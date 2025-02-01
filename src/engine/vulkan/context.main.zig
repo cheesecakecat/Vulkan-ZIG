@@ -85,7 +85,7 @@ pub const Context = struct {
         var vk_device = try device.Device.init(phys_device, .{
             .enable_robustness = false,
             .enable_dynamic_rendering = false,
-            .enable_timeline_semaphores = false,
+            .enable_timeline_semaphores = true,
             .enable_synchronization2 = false,
             .enable_buffer_device_address = false,
             .enable_memory_priority = false,
@@ -100,7 +100,12 @@ pub const Context = struct {
 
         var vk_sync = try sync.SyncObjects.init(
             vk_device.handle,
-            config.max_frames_in_flight,
+            .{
+                .max_frames_in_flight = config.max_frames_in_flight,
+                .enable_validation = config.instance_config.enable_validation,
+                .enable_prediction = true,
+                .batch_size = @min(config.max_frames_in_flight, 8),
+            },
             alloc,
         );
         errdefer vk_sync.deinit();
@@ -169,7 +174,32 @@ pub const Context = struct {
             @intCast(fb_size.height),
             alloc,
             vk_pipeline.render_pass,
-            null,
+            swapchain.SwapchainConfig{
+                .preferred_formats = &[_]c.VkFormat{
+                    c.VK_FORMAT_B8G8R8A8_SRGB,
+                    c.VK_FORMAT_R8G8B8A8_SRGB,
+                },
+                .preferred_color_space = c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+                .preferred_present_modes = &[_]c.VkPresentModeKHR{
+                    c.VK_PRESENT_MODE_FIFO_KHR,
+                    c.VK_PRESENT_MODE_MAILBOX_KHR,
+                },
+                .min_image_count = 2,
+                .image_usage_flags = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    c.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                    c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .transform_flags = c.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                .composite_alpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                .old_swapchain = null,
+                .enable_vsync = config.vsync,
+                .enable_hdr = false,
+                .enable_triple_buffering = config.max_frames_in_flight > 2,
+                .enable_vrr = false,
+                .enable_low_latency = !config.vsync,
+                .enable_frame_pacing = true,
+                .target_fps = 60,
+                .power_save_mode = .Balanced,
+            },
         );
         errdefer vk_swapchain.deinit();
 
@@ -402,8 +432,32 @@ pub const Context = struct {
         logger.info("swapchain: recreating ({d}x{d})", .{ fb_size.width, fb_size.height });
 
         const old_swapchain = self.inner.swapchain;
-        var config = old_swapchain.config;
-        config.old_swapchain = old_swapchain.handle;
+        const swapchain_config = swapchain.SwapchainConfig{
+            .preferred_formats = &[_]c.VkFormat{
+                c.VK_FORMAT_B8G8R8A8_SRGB,
+                c.VK_FORMAT_R8G8B8A8_SRGB,
+            },
+            .preferred_color_space = c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+            .preferred_present_modes = &[_]c.VkPresentModeKHR{
+                c.VK_PRESENT_MODE_FIFO_KHR,
+                c.VK_PRESENT_MODE_MAILBOX_KHR,
+            },
+            .min_image_count = 2,
+            .image_usage_flags = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                c.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .transform_flags = c.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+            .composite_alpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .old_swapchain = old_swapchain.handle,
+            .enable_vsync = self.inner.config.vsync,
+            .enable_hdr = false,
+            .enable_triple_buffering = self.inner.config.max_frames_in_flight > 2,
+            .enable_vrr = false,
+            .enable_low_latency = !self.inner.config.vsync,
+            .enable_frame_pacing = true,
+            .target_fps = 60,
+            .power_save_mode = .Balanced,
+        };
 
         self.inner.swapchain = try swapchain.Swapchain.init(
             self.inner.device.handle,
@@ -414,7 +468,7 @@ pub const Context = struct {
             @intCast(fb_size.height),
             self.allocator,
             self.inner.pipeline.render_pass,
-            config,
+            swapchain_config,
         );
 
         old_swapchain.deinit();

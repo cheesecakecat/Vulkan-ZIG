@@ -4,8 +4,7 @@ const c = @cImport({
 });
 const logger = @import("../core/logger.zig");
 
-// Minimum allocation size to avoid small allocation warnings
-const MIN_ALLOCATION_SIZE: u64 = 1024 * 1024; // 1MB
+const MIN_ALLOCATION_SIZE: u64 = 1024 * 1024;
 const MIN_BUFFER_ALIGNMENT: u64 = 256;
 
 var total_allocated_memory: u64 = 0;
@@ -63,7 +62,6 @@ const MemoryBlock = struct {
         properties: c.VkMemoryPropertyFlags,
         allocator: std.mem.Allocator,
     ) !MemoryBlock {
-        // Round up size to minimum allocation size
         const aligned_size = std.mem.alignForward(u64, size, MIN_ALLOCATION_SIZE);
 
         var memory: c.VkDeviceMemory = undefined;

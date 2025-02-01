@@ -41,6 +41,7 @@ pub const SwapchainConfig = struct {
     enable_frame_pacing: bool,
     target_fps: ?u32,
     power_save_mode: PowerSaveMode,
+    max_fps: ?u32 = 144,
 };
 
 pub const PowerSaveMode = enum {
@@ -443,7 +444,6 @@ pub const Swapchain = struct {
 
         const present_mode = try chooseBestPresentMode(
             support_details.present_modes,
-            actual_config.preferred_present_modes,
             actual_config.enable_vsync,
             actual_config.enable_triple_buffering,
             actual_config.enable_vrr,
@@ -724,64 +724,81 @@ pub const Swapchain = struct {
 
     fn chooseBestPresentMode(
         available_modes: []const c.VkPresentModeKHR,
-        preferred_modes: []const c.VkPresentModeKHR,
         enable_vsync: bool,
         enable_triple_buffering: bool,
         enable_vrr: bool,
         enable_low_latency: bool,
     ) !c.VkPresentModeKHR {
-        if (enable_vsync and !enable_vrr) {
-            return c.VK_PRESENT_MODE_FIFO_KHR;
-        }
+        logger.debug("vulkan: choosing present mode:", .{});
+        logger.debug("  vsync: {}", .{enable_vsync});
+        logger.debug("  triple buffering: {}", .{enable_triple_buffering});
+        logger.debug("  vrr: {}", .{enable_vrr});
+        logger.debug("  low latency: {}", .{enable_low_latency});
+        logger.debug("  available modes:", .{});
 
-        for (preferred_modes) |preferred| {
-            if (enable_vsync and !enable_vrr) {
-                switch (preferred) {
-                    c.VK_PRESENT_MODE_IMMEDIATE_KHR,
-                    c.VK_PRESENT_MODE_MAILBOX_KHR,
-                    => continue,
-                    else => {},
-                }
-            }
-
-            if (!enable_triple_buffering and
-                preferred == c.VK_PRESENT_MODE_MAILBOX_KHR)
-            {
-                continue;
-            }
-
-            for (available_modes) |mode| {
-                if (mode == preferred) {
-                    return mode;
-                }
+        var has_mailbox = false;
+        for (available_modes) |mode| {
+            const mode_str = switch (mode) {
+                c.VK_PRESENT_MODE_IMMEDIATE_KHR => "IMMEDIATE",
+                c.VK_PRESENT_MODE_MAILBOX_KHR => "MAILBOX",
+                c.VK_PRESENT_MODE_FIFO_KHR => "FIFO",
+                c.VK_PRESENT_MODE_FIFO_RELAXED_KHR => "FIFO_RELAXED",
+                else => "UNKNOWN",
+            };
+            logger.debug("    - {any} ({s})", .{ mode, mode_str });
+            if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
+                has_mailbox = true;
             }
         }
 
-        if (enable_low_latency) {
+        // if triple buffering is requested but mailbox mode isn't available (common on AMD),
+        // log a warning since we'll have to fall back to another mode
+        if (enable_triple_buffering and !has_mailbox) {
+            logger.warn("vulkan: triple buffering requested but mailbox mode not supported (common on AMD GPUs)", .{});
+            logger.warn("vulkan: falling back to standard vsync or immediate mode", .{});
+        }
+
+        // if vsync is off, try immediate mode first, then mailbox if triple buffering
+        if (!enable_vsync) {
+            // if triple buffering is enabled and mailbox is available, prefer that over immediate
+            if (enable_triple_buffering and has_mailbox) {
+                for (available_modes) |mode| {
+                    if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
+                        logger.debug("vulkan: selected mailbox present mode", .{});
+                        return mode;
+                    }
+                }
+            }
+
+            // otherwise try immediate mode
             for (available_modes) |mode| {
                 if (mode == c.VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                    logger.debug("vulkan: selected immediate present mode for vsync off", .{});
                     return mode;
                 }
             }
         }
 
-        if (enable_triple_buffering) {
-            for (available_modes) |mode| {
-                if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
-                    return mode;
-                }
-            }
-        }
-
-        if (enable_vrr) {
+        // if vsync is on but VRR is enabled, try relaxed FIFO
+        if (enable_vsync and enable_vrr) {
             for (available_modes) |mode| {
                 if (mode == c.VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+                    logger.debug("vulkan: selected FIFO relaxed present mode for VRR", .{});
                     return mode;
                 }
             }
         }
 
-        return c.VK_PRESENT_MODE_FIFO_KHR;
+        // For vsync on, or if no other modes are available, use FIFO
+        for (available_modes) |mode| {
+            if (mode == c.VK_PRESENT_MODE_FIFO_KHR) {
+                logger.debug("vulkan: selected FIFO present mode for vsync", .{});
+                return mode;
+            }
+        }
+
+        logger.err("vulkan: no suitable present mode found, this shouldn't happen", .{});
+        return error.UnsupportedPresentMode;
     }
 
     fn getSwapchainImages(vk_device: c.VkDevice, swapchain: c.VkSwapchainKHR, alloc: std.mem.Allocator) ![]c.VkImage {

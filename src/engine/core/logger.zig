@@ -9,9 +9,42 @@ pub const LogLevel = enum {
 
 var min_level: LogLevel = .debug;
 var buffer_writer: ?std.io.BufferedWriter(4096, std.fs.File.Writer) = null;
+var file_writer: ?std.fs.File.Writer = null;
 var start_time: i128 = 0;
 
+fn getLogFilename(allocator: std.mem.Allocator) ![]const u8 {
+    const current_time = std.time.timestamp();
+    const time_info = std.time.epoch.EpochSeconds{ .secs = @intCast(current_time) };
+    const day_seconds = time_info.getDaySeconds();
+
+    const total_secs = day_seconds.secs;
+
+    const hours = @divFloor(total_secs, 3600);
+    const minutes = @mod(@divFloor(total_secs, 60), 60);
+    const seconds = @mod(total_secs, 60);
+
+    return std.fmt.allocPrint(allocator, "{d:0>2}_{d:0>2}_{d:0>2}-{s}.log", .{
+        hours,
+        minutes,
+        seconds,
+        @tagName(min_level),
+    });
+}
+
 pub fn init() !void {
+    // Create logs directory if it doesn't exist
+    try std.fs.cwd().makePath("logs");
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const filename = try getLogFilename(allocator);
+    var dir = try std.fs.cwd().openDir("logs", .{});
+    defer dir.close();
+
+    const log_file = try dir.createFile(filename, .{});
+    file_writer = log_file.writer();
     buffer_writer = std.io.bufferedWriter(std.io.getStdErr().writer());
     start_time = std.time.nanoTimestamp();
 }
@@ -19,6 +52,10 @@ pub fn init() !void {
 pub fn deinit() void {
     if (buffer_writer) |*writer| {
         writer.flush() catch {};
+    }
+    if (file_writer) |fw| {
+        // ensure file is synced to disk
+        fw.context.sync() catch {};
     }
 }
 
@@ -54,16 +91,30 @@ fn log(level: LogLevel, comptime fmt: []const u8, args: anytype) void {
     const timestamp = getTimestamp();
 
     const prefix = switch (level) {
+        .debug => "[dbg]",
+        .info => "[inf]",
+        .warn => "[wrn]",
+        .err => "[err]",
+    };
+
+    // Write to console (with colors)
+    const colored_prefix = switch (level) {
         .debug => "\x1b[90m[dbg]\x1b[0m", // gray
         .info => "\x1b[32m[inf]\x1b[0m", // green
         .warn => "\x1b[33m[wrn]\x1b[0m", // yellow
         .err => "\x1b[31m[err]\x1b[0m", // red
     };
-
-    // [HH:MM:SS.mmm] [level] message
-    writer.print("\x1b[90m[{s}]\x1b[0m {s} ", .{ timestamp, prefix }) catch return;
+    writer.print("\x1b[90m[{s}]\x1b[0m {s} ", .{ timestamp, colored_prefix }) catch return;
     writer.print(fmt ++ "\n", args) catch return;
     buffer_writer.?.flush() catch {};
+
+    // Write to file (without colors)
+    if (file_writer) |fw| {
+        fw.print("[{s}] {s} ", .{ timestamp, prefix }) catch return;
+        fw.print(fmt ++ "\n", args) catch return;
+        // force flush after each write to ensure it's on disk
+        fw.context.sync() catch {};
+    }
 }
 
 pub fn debug(comptime fmt: []const u8, args: anytype) void {

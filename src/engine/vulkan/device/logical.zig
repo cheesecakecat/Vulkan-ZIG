@@ -59,7 +59,6 @@ const DeviceFeatureChain = struct {
             },
         };
 
-        // Only enable features based on config
         if (config.enable_descriptor_indexing) {
             self.vulkan_12.descriptorIndexing = c.VK_TRUE;
             self.vulkan_12.descriptorBindingUniformBufferUpdateAfterBind = c.VK_TRUE;
@@ -106,7 +105,6 @@ const DeviceFeatureChain = struct {
             self.memory.memoryPriority = c.VK_TRUE;
         }
 
-        // Set up the feature chain
         self.vulkan_13.pNext = &self.vulkan_12;
         self.vulkan_12.pNext = &self.robustness2;
         self.robustness2.pNext = &self.memory;
