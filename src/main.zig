@@ -1,7 +1,3 @@
-// NOTE: It works!
-// TODO: Fix performance warnings.
-// NOTE: I love Vulkan validation.
-
 const std = @import("std");
 const c = @cImport({
     @cInclude("vulkan/vulkan.h");
