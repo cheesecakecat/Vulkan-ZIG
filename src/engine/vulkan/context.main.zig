@@ -17,6 +17,8 @@ const commands = @import("commands.zig");
 const pipeline = @import("pipeline.zig");
 const col3 = @import("../core/math/col3/col3.zig");
 
+const VERTICES_PER_QUAD = 4;
+
 fn checkVkResult(result: c.VkResult) !void {
     return switch (result) {
         c.VK_SUCCESS => {},
@@ -70,6 +72,7 @@ pub const Context = struct {
         frame_times: [60]f32 = [_]f32{0} ** 60,
         frame_time_index: usize = 0,
         config: types.Context.Config,
+        clear_color: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 },
     },
     window: glfw.Window,
     allocator: std.mem.Allocator,
@@ -233,7 +236,12 @@ pub const Context = struct {
         self.inner.device.deinit();
 
         c.vkDestroySurfaceKHR(self.inner.instance.handle, self.inner.surface, null);
+        self.inner.instance.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn setClearColor(self: *Context, r: f32, g: f32, b: f32, a: f32) void {
+        self.inner.clear_color = .{ r, g, b, a };
     }
 
     pub fn endFrame(self: *Context, sprite_batch: *sprite.SpriteBatch) !void {
@@ -242,35 +250,16 @@ pub const Context = struct {
         const fb_size = self.window.getFramebufferSize();
         if (fb_size.width == 0 or fb_size.height == 0) {
             self.inner.swapchain.handleWindowState(0, 0);
-
             std.time.sleep(16 * std.time.ns_per_ms);
             return;
         }
-        self.inner.swapchain.handleWindowState(@intCast(fb_size.width), @intCast(fb_size.height));
 
-        const now = std.time.nanoTimestamp();
-        self.inner.frames_this_second += 1;
-        if (now - self.inner.last_fps_update >= 5 * std.time.ns_per_s) {
-            const frame_time = if (self.inner.frame_count > 0)
-                @as(f32, @floatFromInt(now - self.inner.last_frame_time)) / @as(f32, @floatFromInt(std.time.ns_per_ms))
-            else
-                0;
+        const needs_resize = fb_size.width != self.inner.swapchain.extent.width or
+            fb_size.height != self.inner.swapchain.extent.height;
 
-            var avg_frame_time: f32 = 0;
-            for (self.inner.frame_times) |time| {
-                avg_frame_time += time;
-            }
-            avg_frame_time /= @as(f32, @floatFromInt(self.inner.frame_times.len));
-
-            const fps = @as(f32, @floatFromInt(self.inner.frames_this_second)) / 5.0;
-            logger.info("perf: {d:.1} fps, frame_time={d:.2}ms (avg={d:.2}ms)", .{
-                fps,
-                frame_time,
-                avg_frame_time,
-            });
-
-            self.inner.frames_this_second = 0;
-            self.inner.last_fps_update = now;
+        if (needs_resize) {
+            try self.recreateSwapchain();
+            return;
         }
 
         const image_available = self.inner.sync_objects.image_available_semaphores[self.inner.current_frame];
@@ -282,23 +271,36 @@ pub const Context = struct {
             1,
             &in_flight_fence,
             c.VK_TRUE,
-            std.time.ns_per_s,
+            1000 * std.time.ns_per_ms,
         );
 
-        if (fence_result == c.VK_TIMEOUT) {
-            logger.err("gpu: fence wait timeout - possible GPU hang", .{});
+        if (fence_result != c.VK_SUCCESS) {
+            logger.err("gpu: fence wait failed - attempting recovery", .{});
+            try self.handleDeviceLost();
             return error.GPUHang;
         }
-        try checkVkResult(fence_result);
 
         try checkVkResult(c.vkResetFences(self.inner.device.handle, 1, &in_flight_fence));
 
-        const acquire_result = try self.inner.swapchain.acquireNextImage(image_available);
+        self.inner.swapchain.handleWindowState(@intCast(fb_size.width), @intCast(fb_size.height));
+
+        const acquire_result = self.inner.swapchain.acquireNextImage(image_available) catch |err| {
+            switch (err) {
+                error.ImageAcquisitionFailed => {
+                    try self.waitIdle();
+                    try self.recreateSwapchain();
+                    return;
+                },
+                else => return err,
+            }
+        };
+
         if (acquire_result.should_recreate) {
-            logger.debug("swapchain: needs recreation", .{});
+            try self.waitIdle();
             try self.recreateSwapchain();
             return;
         }
+
         const image_index = acquire_result.image_index;
 
         const cmd = &self.inner.command_buffers[self.inner.current_frame];
@@ -306,7 +308,7 @@ pub const Context = struct {
         try cmd.begin(c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
         const clear_color = c.VkClearValue{
-            .color = .{ .float32 = col3.Colors.cornflowerBlue.toF32x4(1.0) },
+            .color = .{ .float32 = self.inner.clear_color },
         };
 
         const render_pass_info = c.VkRenderPassBeginInfo{
@@ -323,7 +325,6 @@ pub const Context = struct {
         };
 
         c.vkCmdBeginRenderPass(cmd.handle, &render_pass_info, c.VK_SUBPASS_CONTENTS_INLINE);
-
         c.vkCmdBindPipeline(cmd.handle, c.VK_PIPELINE_BIND_POINT_GRAPHICS, self.inner.pipeline.pipeline);
 
         const viewport = c.VkViewport{
@@ -352,27 +353,23 @@ pub const Context = struct {
         );
 
         const vertex_buffers = [_]c.VkBuffer{
-            sprite_batch.vertex_buffer.handle,
             sprite_batch.instance_buffer.handle,
         };
-        const offsets = [_]c.VkDeviceSize{ 0, 0 };
+        const offsets = [_]c.VkDeviceSize{0};
 
-        c.vkCmdBindVertexBuffers(cmd.handle, 0, 2, &vertex_buffers, &offsets);
-        c.vkCmdBindIndexBuffer(cmd.handle, sprite_batch.index_buffer.handle, 0, c.VK_INDEX_TYPE_UINT32);
+        c.vkCmdBindVertexBuffers(cmd.handle, 0, 1, &vertex_buffers, &offsets);
 
-        for (sprite_batch.draw_calls.items) |draw_call| {
-            c.vkCmdDrawIndexed(
+        for (sprite_batch.draw_calls.items) |batch| {
+            c.vkCmdDraw(
                 cmd.handle,
-                draw_call.index_count,
-                draw_call.instance_count,
-                draw_call.first_index,
+                4,
+                batch.instance_count,
                 0,
                 0,
             );
         }
 
         c.vkCmdEndRenderPass(cmd.handle);
-
         try cmd.end();
 
         const wait_stages = [_]c.VkPipelineStageFlags{c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -401,9 +398,34 @@ pub const Context = struct {
         const present_semaphores = [_]c.VkSemaphore{render_finished};
         const should_recreate = try self.inner.swapchain.presentImage(image_index, &present_semaphores);
         if (should_recreate) {
-            logger.debug("swapchain: needs recreation after present", .{});
+            try self.waitIdle();
             try self.recreateSwapchain();
             return;
+        }
+
+        const now = std.time.nanoTimestamp();
+        self.inner.frames_this_second += 1;
+        if (now - self.inner.last_fps_update >= 5 * std.time.ns_per_s) {
+            const frame_time = if (self.inner.frame_count > 0)
+                @as(f32, @floatFromInt(now - self.inner.last_frame_time)) / @as(f32, @floatFromInt(std.time.ns_per_ms))
+            else
+                0;
+
+            var avg_frame_time: f32 = 0;
+            for (self.inner.frame_times) |time| {
+                avg_frame_time += time;
+            }
+            avg_frame_time /= @as(f32, @floatFromInt(self.inner.frame_times.len));
+
+            const fps = @as(f32, @floatFromInt(self.inner.frames_this_second)) / 5.0;
+            logger.info("perf: {d:.1} fps, frame_time={d:.2}ms (avg={d:.2}ms)", .{
+                fps,
+                frame_time,
+                avg_frame_time,
+            });
+
+            self.inner.frames_this_second = 0;
+            self.inner.last_fps_update = now;
         }
 
         const frame_end = std.time.nanoTimestamp();
@@ -417,12 +439,10 @@ pub const Context = struct {
     }
 
     pub fn waitIdle(self: *Context) !void {
-        _ = c.vkDeviceWaitIdle(self.inner.device.handle);
+        try checkVkResult(c.vkDeviceWaitIdle(self.inner.device.handle));
     }
 
     pub fn recreateSwapchain(self: *Context) !void {
-        _ = c.vkDeviceWaitIdle(self.inner.device.handle);
-
         const fb_size = self.window.getFramebufferSize();
         if (fb_size.width == 0 or fb_size.height == 0) {
             logger.debug("window: minimized, skipping swapchain recreation", .{});
@@ -432,33 +452,44 @@ pub const Context = struct {
 
         logger.info("swapchain: recreating ({d}x{d})", .{ fb_size.width, fb_size.height });
 
+        var all_fences_signaled = true;
+        for (self.inner.sync_objects.in_flight_fences) |fence| {
+            const result = c.vkWaitForFences(
+                self.inner.device.handle,
+                1,
+                &fence,
+                c.VK_TRUE,
+                500 * std.time.ns_per_ms,
+            );
+            if (result != c.VK_SUCCESS) {
+                all_fences_signaled = false;
+                logger.warn("vulkan: fence wait timed out during resize, will force cleanup", .{});
+                break;
+            }
+        }
+
+        if (!all_fences_signaled) {
+            _ = c.vkQueueWaitIdle(self.inner.device.graphics_queue);
+            _ = c.vkQueueWaitIdle(self.inner.device.present_queue);
+
+            for (self.inner.sync_objects.in_flight_fences) |fence| {
+                _ = c.vkResetFences(self.inner.device.handle, 1, &fence);
+            }
+
+            const device_wait_result = c.vkDeviceWaitIdle(self.inner.device.handle);
+            if (device_wait_result != c.VK_SUCCESS) {
+                logger.err("vulkan: failed to wait for device idle: {}", .{device_wait_result});
+                return error.DeviceLost;
+            }
+        }
+
         const old_swapchain = self.inner.swapchain;
-        const swapchain_config = swapchain.SwapchainConfig{
-            .preferred_formats = &[_]c.VkFormat{
-                c.VK_FORMAT_B8G8R8A8_SRGB,
-                c.VK_FORMAT_R8G8B8A8_SRGB,
-            },
-            .preferred_color_space = c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-            .preferred_present_modes = &[_]c.VkPresentModeKHR{
-                c.VK_PRESENT_MODE_FIFO_KHR,
-                c.VK_PRESENT_MODE_MAILBOX_KHR,
-            },
-            .min_image_count = 2,
-            .image_usage_flags = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                c.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            .transform_flags = c.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
-            .composite_alpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .old_swapchain = old_swapchain.handle,
-            .enable_vsync = self.inner.config.vsync,
-            .enable_hdr = false,
-            .enable_triple_buffering = self.inner.config.max_frames_in_flight > 2,
-            .enable_vrr = false,
-            .enable_low_latency = !self.inner.config.vsync,
-            .enable_frame_pacing = true,
-            .target_fps = 60,
-            .power_save_mode = .Balanced,
-        };
+        errdefer old_swapchain.deinit();
+
+        try self.inner.command_pool.reset();
+        for (self.inner.command_buffers) |*cmd_buf| {
+            try cmd_buf.reset();
+        }
 
         self.inner.swapchain = try swapchain.Swapchain.init(
             self.inner.device.handle,
@@ -469,26 +500,135 @@ pub const Context = struct {
             @intCast(fb_size.height),
             self.allocator,
             self.inner.pipeline.render_pass,
-            swapchain_config,
+            swapchain.SwapchainConfig{
+                .preferred_formats = &[_]c.VkFormat{
+                    c.VK_FORMAT_B8G8R8A8_SRGB,
+                    c.VK_FORMAT_R8G8B8A8_SRGB,
+                },
+                .preferred_color_space = c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+                .preferred_present_modes = &[_]c.VkPresentModeKHR{
+                    c.VK_PRESENT_MODE_FIFO_KHR,
+                    c.VK_PRESENT_MODE_MAILBOX_KHR,
+                },
+                .min_image_count = 2,
+                .image_usage_flags = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                    c.VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                    c.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                .transform_flags = c.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+                .composite_alpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                .old_swapchain = old_swapchain.handle,
+                .enable_vsync = self.inner.config.vsync,
+                .enable_hdr = false,
+                .enable_triple_buffering = self.inner.config.max_frames_in_flight > 2,
+                .enable_vrr = false,
+                .enable_low_latency = !self.inner.config.vsync,
+                .enable_frame_pacing = true,
+                .target_fps = 60,
+                .power_save_mode = .Balanced,
+            },
         );
 
         old_swapchain.deinit();
 
         self.inner.projection = math.ortho(0, @floatFromInt(fb_size.width), @floatFromInt(fb_size.height), 0).toArray2D();
         logger.debug("window: updated projection matrix for new size", .{});
+
+        self.inner.current_frame = 0;
+        self.inner.frame_count = 0;
+        self.inner.frames_this_second = 0;
+        self.inner.last_fps_update = std.time.nanoTimestamp();
+
+        try self.prepareFirstFrame();
+    }
+
+    pub fn handleDeviceLost(self: *Context) !void {
+        logger.err("vulkan: device lost - attempting recovery", .{});
+
+        std.time.sleep(100 * std.time.ns_per_ms);
+
+        _ = c.vkQueueWaitIdle(self.inner.device.graphics_queue);
+
+        for (self.inner.command_buffers) |*cmd_buf| {
+            cmd_buf.reset() catch |err| {
+                logger.err("vulkan: failed to reset command buffer during recovery: {}", .{err});
+            };
+        }
+
+        for (self.inner.sync_objects.in_flight_fences) |fence| {
+            const fence_result = c.vkResetFences(self.inner.device.handle, 1, &fence);
+            if (fence_result != c.VK_SUCCESS) {
+                logger.err("vulkan: failed to reset fence during recovery: {}", .{fence_result});
+            }
+        }
+
+        for (self.inner.sync_objects.image_available_semaphores) |_| {
+            _ = c.vkQueueWaitIdle(self.inner.device.graphics_queue);
+        }
+        for (self.inner.sync_objects.render_finished_semaphores) |_| {
+            _ = c.vkQueueWaitIdle(self.inner.device.graphics_queue);
+        }
+
+        self.inner.current_frame = 0;
+        self.inner.frame_count = 0;
+        self.inner.frames_this_second = 0;
+        self.inner.last_fps_update = std.time.nanoTimestamp();
+
+        logger.info("vulkan: device recovery attempted", .{});
     }
 
     pub fn handleResize(self: *Context) !void {
+        try checkVkResult(c.vkDeviceWaitIdle(self.inner.device.handle));
+
         var width: i32 = 0;
         var height: i32 = 0;
+        var retry_count: u32 = 0;
+        const MAX_RETRIES = 10;
+
         while (width == 0 or height == 0) {
-            const size = self.inner.window.getFramebufferSize();
+            if (retry_count >= MAX_RETRIES) {
+                logger.err("window: failed to get valid framebuffer size after {d} retries", .{MAX_RETRIES});
+                return error.InvalidFramebufferSize;
+            }
+
+            const size = self.window.getFramebufferSize();
             width = size.width;
             height = size.height;
-            glfw.waitEvents();
+
+            if (width == 0 or height == 0) {
+                retry_count += 1;
+                std.time.sleep(50 * std.time.ns_per_ms);
+                glfw.waitEvents();
+            }
         }
 
-        try self.recreateSwapchain();
+        self.recreateSwapchain() catch |err| {
+            logger.err("window: failed to recreate swapchain during resize: {}", .{err});
+            switch (err) {
+                error.DeviceLost => {
+                    logger.err("window: device lost during resize, attempting recovery...", .{});
+
+                    return err;
+                },
+                error.SurfaceLost => {
+                    logger.err("window: surface lost during resize, attempting recreation...", .{});
+
+                    return err;
+                },
+                error.OutOfMemory => {
+                    logger.err("window: out of memory during swapchain recreation", .{});
+                    return err;
+                },
+                error.InitializationFailed => {
+                    logger.err("window: swapchain initialization failed", .{});
+                    return err;
+                },
+                error.Unknown => {
+                    logger.err("window: unknown error during swapchain recreation", .{});
+                    return err;
+                },
+                else => return err,
+            }
+        };
     }
 
     pub fn prepareFirstFrame(self: *Context) !void {

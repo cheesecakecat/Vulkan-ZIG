@@ -13,11 +13,10 @@ pub const math = struct {
     pub const sqrt = std.math.sqrt;
 };
 
-pub fn ortho(left: f32, right: f32, bottom: f32, top: f32) Mat4 {
-    return Mat4.ortho2D(left, right, bottom, top);
+pub fn clamp(value: anytype, min: @TypeOf(value), max: @TypeOf(value)) @TypeOf(value) {
+    return @min(@max(value, min), max);
 }
 
-test {
-    _ = vec;
-    _ = mat;
+pub fn ortho(left: f32, right: f32, bottom: f32, top: f32) Mat4 {
+    return Mat4.ortho2D(left, right, bottom, top);
 }

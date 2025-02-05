@@ -32,7 +32,6 @@ fn getLogFilename(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 pub fn init() !void {
-    // Create logs directory if it doesn't exist
     try std.fs.cwd().makePath("logs");
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -54,7 +53,6 @@ pub fn deinit() void {
         writer.flush() catch {};
     }
     if (file_writer) |fw| {
-        // ensure file is synced to disk
         fw.context.sync() catch {};
     }
 }
@@ -97,22 +95,20 @@ fn log(level: LogLevel, comptime fmt: []const u8, args: anytype) void {
         .err => "[err]",
     };
 
-    // Write to console (with colors)
     const colored_prefix = switch (level) {
-        .debug => "\x1b[90m[dbg]\x1b[0m", // gray
-        .info => "\x1b[32m[inf]\x1b[0m", // green
-        .warn => "\x1b[33m[wrn]\x1b[0m", // yellow
-        .err => "\x1b[31m[err]\x1b[0m", // red
+        .debug => "\x1b[90m[dbg]\x1b[0m",
+        .info => "\x1b[32m[inf]\x1b[0m",
+        .warn => "\x1b[33m[wrn]\x1b[0m",
+        .err => "\x1b[31m[err]\x1b[0m",
     };
     writer.print("\x1b[90m[{s}]\x1b[0m {s} ", .{ timestamp, colored_prefix }) catch return;
     writer.print(fmt ++ "\n", args) catch return;
     buffer_writer.?.flush() catch {};
 
-    // Write to file (without colors)
     if (file_writer) |fw| {
         fw.print("[{s}] {s} ", .{ timestamp, prefix }) catch return;
         fw.print(fmt ++ "\n", args) catch return;
-        // force flush after each write to ensure it's on disk
+
         fw.context.sync() catch {};
     }
 }

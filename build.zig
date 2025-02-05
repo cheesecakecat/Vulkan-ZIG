@@ -64,8 +64,6 @@ pub fn build(b: *std.Build) void {
         },
     };
 
-    const vma_include_path = "deps";
-
     const lib_path = switch (target.result.os.tag) {
         .windows => b.pathJoin(&.{ vulkan_sdk, "Lib" }),
         .linux => b.pathJoin(&.{ vulkan_sdk, "lib" }),
@@ -77,7 +75,7 @@ pub fn build(b: *std.Build) void {
     };
 
     lib.addIncludePath(.{ .cwd_relative = include_path });
-    lib.addIncludePath(.{ .cwd_relative = vma_include_path });
+    lib.addIncludePath(.{ .cwd_relative = "deps/" });
     lib.addLibraryPath(.{ .cwd_relative = lib_path });
     if (target.result.os.tag == .windows) {
         lib.linkSystemLibrary("vulkan-1");
@@ -94,7 +92,6 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.addIncludePath(.{ .cwd_relative = include_path });
-    exe.addIncludePath(.{ .cwd_relative = vma_include_path });
     exe.addLibraryPath(.{ .cwd_relative = lib_path });
     if (target.result.os.tag == .windows) {
         exe.linkSystemLibrary("vulkan-1");
@@ -116,12 +113,10 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    // Compile shaders
     const shader_step = b.step("shaders", "Compile shaders to SPIR-V");
     const shader_dir = "shaders/";
     const shaders = [_][]const u8{ "sprite.vert", "sprite.frag" };
 
-    // Create shader output directory
     const shader_out_dir = "zig-out/shaders";
     std.fs.cwd().makePath(shader_out_dir) catch |err| {
         std.debug.print("Failed to create shader directory: {}\n", .{err});

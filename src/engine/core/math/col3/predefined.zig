@@ -1,7 +1,11 @@
 const Col3 = @import("col3.zig").Col3;
 
 pub const Colors = struct {
-    // Core colors
+    // Core colors with alpha
+    pub const transparent = Col3.rgba(0, 0, 0, 0.0);
+    pub const semiTransparent = Col3.rgba(0, 0, 0, 0.5);
+
+    // Core colors (fully opaque)
     pub const black = Col3.rgb(0, 0, 0);
     pub const white = Col3.rgb(255, 255, 255);
     pub const red = Col3.rgb(255, 0, 0);

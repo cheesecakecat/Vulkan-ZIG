@@ -17,7 +17,7 @@ pub const Swapchain = swapchain.Swapchain;
 pub const Device = device.Device;
 pub const PhysicalDevice = physical.PhysicalDevice;
 
-fn makeVersion(major: u32, minor: u32, patch: u32) u32 {
+pub fn makeVersion(major: u32, minor: u32, patch: u32) u32 {
     return c.VK_MAKE_VERSION(major, minor, patch);
 }
 

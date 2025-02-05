@@ -1,6 +1,3 @@
-// NOTE: it just a mess.
-// TODO: rewrite.
-
 const std = @import("std");
 const c = @cImport({
     @cInclude("vulkan/vulkan.h");
@@ -8,798 +5,130 @@ const c = @cImport({
 const math = @import("../core/math.zig");
 const logger = @import("../core/logger.zig");
 const resources = @import("resources.zig");
-const builtin = @import("std").builtin;
-const physical = @import("device/physical.zig");
-const commands = @import("commands.zig");
 
-fn calculateModelMatrix(position: [2]f32, size: [2]f32, rotation: f32) [4][4]f32 {
-    const pos = math.Vec2.fromArray(position);
-    const scale = math.Vec2.fromArray(size);
+const INSTANCE_BUFFER_SIZE = 32 * 1024 * 1024;
+const MAX_SPRITES_PER_BATCH = 500000;
+const VERTICES_PER_QUAD = 4;
 
-    var transform = math.Mat4.translate(pos.x(), pos.y(), 0);
+const CACHE_LINE_SIZE = 64;
+const INSTANCE_BUFFER_ALIGNMENT = 256;
 
-    const rot = math.Mat4.rotate(rotation, 0, 0, 1);
+const BUFFER_GROWTH_FACTOR: f32 = 1.5;
+const BUFFER_SHRINK_THRESHOLD: f32 = 0.3;
 
-    const scl = math.Mat4.scale(scale.x(), scale.y(), 1);
-
-    const result = transform.mul(rot).mul(scl);
-
-    return result.toArray2D();
-}
-
-pub const Vertex = extern struct {
-    position: [2]f32 align(16),
-    uv: [2]f32 align(16),
-    color: [4]f32 align(16),
-
-    pub inline fn getBindingDescription() c.VkVertexInputBindingDescription {
-        return .{
-            .binding = 0,
-            .stride = @sizeOf(Vertex),
-            .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
-        };
-    }
-
-    pub inline fn getAttributeDescriptions() [3]c.VkVertexInputAttributeDescription {
-        return .{
-            .{
-                .binding = 0,
-                .location = 0,
-                .format = c.VK_FORMAT_R32G32_SFLOAT,
-                .offset = @offsetOf(Vertex, "position"),
-            },
-            .{
-                .binding = 0,
-                .location = 1,
-                .format = c.VK_FORMAT_R32G32_SFLOAT,
-                .offset = @offsetOf(Vertex, "uv"),
-            },
-            .{
-                .binding = 0,
-                .location = 2,
-                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(Vertex, "color"),
-            },
-        };
-    }
+const MEMORY_POOL_CONFIG = struct {
+    const STAGING_BLOCK_SIZE = 128 * 1024 * 1024;
+    const MIN_ALLOCATION_SIZE = 1024 * 1024;
+    const MAX_ALLOCATIONS = 1024;
 };
 
-pub const SpriteInstance = extern struct {
-    model: [4][4]f32 align(16),
-    color_and_uv: [4]f32 align(16),
-    metadata: packed struct {
-        layer: f32,
-        texture_id: u32,
-        flags: u32,
-        _padding: u32 = 0,
-    } align(16),
+const AtomicCounter = std.atomic.Value(u64);
 
-    pub inline fn getBindingDescription() c.VkVertexInputBindingDescription {
+pub const SpriteInstance = extern struct {
+    transform: [4][4]f32 align(16),
+    color: [4]f32 align(16),
+    tex_rect: [4]f32 align(16),
+    layer: u32 align(4),
+    flags: u32 align(4),
+
+    pub fn getBindingDescription() c.VkVertexInputBindingDescription {
         return .{
-            .binding = 1,
+            .binding = 0,
             .stride = @sizeOf(SpriteInstance),
             .inputRate = c.VK_VERTEX_INPUT_RATE_INSTANCE,
         };
     }
 
-    pub inline fn getAttributeDescriptions() [6]c.VkVertexInputAttributeDescription {
+    pub fn getAttributeDescriptions() [7]c.VkVertexInputAttributeDescription {
         return .{
             .{
-                .binding = 1,
-                .location = 3,
+                .binding = 0,
+                .location = 0,
                 .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(SpriteInstance, "model") + 0,
+                .offset = @offsetOf(SpriteInstance, "transform") + 0 * @sizeOf([4]f32),
             },
-            .{
-                .binding = 1,
-                .location = 4,
-                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(SpriteInstance, "model") + 16,
-            },
-            .{
-                .binding = 1,
-                .location = 5,
-                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(SpriteInstance, "model") + 32,
-            },
-            .{
-                .binding = 1,
-                .location = 6,
-                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(SpriteInstance, "model") + 48,
-            },
-            .{
-                .binding = 1,
-                .location = 7,
-                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(SpriteInstance, "color_and_uv"),
-            },
-            .{
-                .binding = 1,
-                .location = 8,
-                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
-                .offset = @offsetOf(SpriteInstance, "metadata"),
-            },
-        };
-    }
-};
-
-const SortKey = packed struct {
-    layer: u16,
-    texture_id: u8,
-    blend_mode: u4,
-    flags: u4,
-};
-
-fn compareSortKeys(_: void, a: SortKey, b: SortKey) bool {
-    const self_val = @as(u32, @bitCast(a));
-    const other_val = @as(u32, @bitCast(b));
-    return self_val < other_val;
-}
-
-const CommandBufferPool = struct {
-    pool: *commands.CommandSystem.CommandPool,
-    buffers: []commands.CommandSystem.CommandBuffer,
-    current: usize,
-    raw_buffers: []c.VkCommandBuffer,
-
-    pub fn init(device: c.VkDevice, instance: c.VkInstance, queue_family: u32, max_buffers: u32, alloc: std.mem.Allocator) !CommandBufferPool {
-        var pool_ptr = try alloc.create(commands.CommandSystem.CommandPool);
-        errdefer alloc.destroy(pool_ptr);
-
-        pool_ptr.* = try commands.CommandSystem.CommandPool.init(
-            device,
-            instance,
-            alloc,
-            .{
-                .queue_family_index = queue_family,
-                .thread_safe = false,
-                .enable_validation = false,
-                .max_buffers_per_thread = max_buffers,
-            },
-        );
-        errdefer pool_ptr.deinit();
-
-        const buffers = try alloc.alloc(commands.CommandSystem.CommandBuffer, max_buffers);
-        errdefer alloc.free(buffers);
-
-        const raw_buffers = try alloc.alloc(c.VkCommandBuffer, max_buffers);
-        errdefer alloc.free(raw_buffers);
-
-        return CommandBufferPool{
-            .pool = pool_ptr,
-            .buffers = buffers,
-            .current = 0,
-            .raw_buffers = raw_buffers,
-        };
-    }
-
-    pub fn deinit(self: *CommandBufferPool, alloc: std.mem.Allocator) void {
-        _ = c.vkDeviceWaitIdle(self.pool.device);
-
-        for (self.buffers[0..self.current]) |*buffer| {
-            if (buffer.handle != null) {
-                _ = buffer.reset() catch {};
-                self.pool.releaseBuffer(buffer);
-            }
-        }
-
-        self.pool.deinit();
-        alloc.destroy(self.pool);
-
-        alloc.free(self.buffers);
-        alloc.free(self.raw_buffers);
-    }
-
-    pub fn getNextBuffer(self: *CommandBufferPool) !c.VkCommandBuffer {
-        if (self.current >= self.buffers.len) {
-            return error.NoCommandBuffersAvailable;
-        }
-
-        const buffer = try self.pool.acquireBuffer(.{});
-        self.buffers[self.current] = buffer;
-        self.raw_buffers[self.current] = buffer.handle;
-        const raw_buffer = self.raw_buffers[self.current];
-        self.current += 1;
-        return raw_buffer;
-    }
-
-    pub fn reset(self: *CommandBufferPool) void {
-        _ = c.vkDeviceWaitIdle(self.pool.device);
-
-        for (self.buffers[0..self.current]) |*buffer| {
-            if (buffer.handle != null) {
-                _ = buffer.reset() catch {};
-                self.pool.releaseBuffer(buffer);
-            }
-        }
-
-        _ = self.pool.reset() catch |err| {
-            logger.err("Failed to reset command pool: {}", .{err});
-        };
-        self.current = 0;
-    }
-};
-
-const SpriteTransform = extern struct {
-    position: [4]f32 align(16),
-    scale: [4]f32 align(16),
-    rotation: [4]f32 align(16),
-    layer: [4]f32 align(16),
-};
-
-const COMPUTE_WORKGROUP_SIZE = 256;
-const MAX_SPRITES_PER_DISPATCH = COMPUTE_WORKGROUP_SIZE * 64;
-
-const MEMORY_POOL_BLOCK_SIZE = 64;
-const MEMORY_POOL_ALIGNMENT = 16;
-const MEMORY_POOL_MIN_BLOCKS = 8;
-const MEMORY_POOL_MAX_BLOCKS = 1024;
-
-const MemoryBlock = struct {
-    data: []align(MEMORY_POOL_ALIGNMENT) u8,
-    next: ?*MemoryBlock,
-    used: bool,
-    size: usize,
-};
-
-const MemoryChunk = struct {
-    blocks: []MemoryBlock,
-    next: ?*MemoryChunk,
-    used_blocks: u32,
-};
-
-const SpriteMemoryPool = struct {
-    transforms: []align(MEMORY_POOL_ALIGNMENT) SpriteTransform,
-    vertices: []align(MEMORY_POOL_ALIGNMENT) Vertex,
-    indices: []align(MEMORY_POOL_ALIGNMENT) u32,
-    instances: []align(MEMORY_POOL_ALIGNMENT) SpriteInstance,
-
-    transform_chunks: std.ArrayList(*MemoryChunk),
-    vertex_chunks: std.ArrayList(*MemoryChunk),
-    instance_chunks: std.ArrayList(*MemoryChunk),
-
-    free_transforms: ?*MemoryBlock,
-    free_vertices: ?*MemoryBlock,
-    free_instances: ?*MemoryBlock,
-
-    allocator: std.mem.Allocator,
-
-    pub fn init(max_sprites: u32, alloc: std.mem.Allocator) !SpriteMemoryPool {
-        const transforms = try alloc.alignedAlloc(SpriteTransform, MEMORY_POOL_ALIGNMENT, max_sprites);
-        errdefer alloc.free(transforms);
-
-        const vertices = try alloc.alignedAlloc(Vertex, MEMORY_POOL_ALIGNMENT, max_sprites * 4);
-        errdefer alloc.free(vertices);
-
-        const indices = try alloc.alignedAlloc(u32, MEMORY_POOL_ALIGNMENT, max_sprites * 6);
-        errdefer alloc.free(indices);
-
-        const instances = try alloc.alignedAlloc(SpriteInstance, MEMORY_POOL_ALIGNMENT, max_sprites);
-        errdefer alloc.free(instances);
-
-        var transform_chunks = std.ArrayList(*MemoryChunk).init(alloc);
-        errdefer transform_chunks.deinit();
-
-        var vertex_chunks = std.ArrayList(*MemoryChunk).init(alloc);
-        errdefer vertex_chunks.deinit();
-
-        var instance_chunks = std.ArrayList(*MemoryChunk).init(alloc);
-        errdefer instance_chunks.deinit();
-
-        const initial_blocks = @max(MEMORY_POOL_MIN_BLOCKS, max_sprites / MEMORY_POOL_BLOCK_SIZE);
-        try transform_chunks.append(try createMemoryChunk(alloc, @sizeOf(SpriteTransform), initial_blocks));
-        try vertex_chunks.append(try createMemoryChunk(alloc, @sizeOf(Vertex) * 4, initial_blocks));
-        try instance_chunks.append(try createMemoryChunk(alloc, @sizeOf(SpriteInstance), initial_blocks));
-
-        return SpriteMemoryPool{
-            .transforms = transforms,
-            .vertices = vertices,
-            .indices = indices,
-            .instances = instances,
-            .transform_chunks = transform_chunks,
-            .vertex_chunks = vertex_chunks,
-            .instance_chunks = instance_chunks,
-            .free_transforms = null,
-            .free_vertices = null,
-            .free_instances = null,
-            .allocator = alloc,
-        };
-    }
-
-    pub fn deinit(self: *SpriteMemoryPool) void {
-        for (self.transform_chunks.items) |chunk| {
-            freeMemoryChunk(self.allocator, chunk);
-        }
-        for (self.vertex_chunks.items) |chunk| {
-            freeMemoryChunk(self.allocator, chunk);
-        }
-        for (self.instance_chunks.items) |chunk| {
-            freeMemoryChunk(self.allocator, chunk);
-        }
-
-        self.transform_chunks.deinit();
-        self.vertex_chunks.deinit();
-        self.instance_chunks.deinit();
-
-        self.allocator.free(self.transforms);
-        self.allocator.free(self.vertices);
-        self.allocator.free(self.indices);
-        self.allocator.free(self.instances);
-    }
-
-    fn createMemoryChunk(allocator: std.mem.Allocator, block_size: usize, num_blocks: u32) !*MemoryChunk {
-        const chunk = try allocator.create(MemoryChunk);
-        errdefer allocator.destroy(chunk);
-
-        const aligned_size = std.mem.alignForward(usize, block_size, MEMORY_POOL_ALIGNMENT);
-        const blocks = try allocator.alloc(MemoryBlock, num_blocks);
-        errdefer allocator.free(blocks);
-
-        const total_size = aligned_size * num_blocks;
-        const data = try allocator.alignedAlloc(u8, MEMORY_POOL_ALIGNMENT, total_size);
-        errdefer allocator.free(data);
-
-        for (blocks, 0..) |*block, i| {
-            const start = i * aligned_size;
-            const slice = data[start .. start + aligned_size];
-            block.* = .{
-                .data = @alignCast(slice),
-                .next = if (i < blocks.len - 1) &blocks[i + 1] else null,
-                .used = false,
-                .size = block_size,
-            };
-        }
-
-        chunk.* = .{
-            .blocks = blocks,
-            .next = null,
-            .used_blocks = 0,
-        };
-
-        return chunk;
-    }
-
-    fn freeMemoryChunk(allocator: std.mem.Allocator, chunk: *MemoryChunk) void {
-        if (chunk.blocks.len > 0) {
-            allocator.free(chunk.blocks[0].data[0 .. chunk.blocks[0].size * chunk.blocks.len]);
-        }
-        allocator.free(chunk.blocks);
-        allocator.destroy(chunk);
-    }
-
-    pub fn allocTransform(self: *SpriteMemoryPool) ?*SpriteTransform {
-        if (self.free_transforms) |block| {
-            self.free_transforms = block.next;
-            block.used = true;
-            return @ptrCast(@alignCast(block.data.ptr));
-        }
-
-        for (self.transform_chunks.items) |chunk| {
-            if (chunk.used_blocks < chunk.blocks.len) {
-                const block = &chunk.blocks[chunk.used_blocks];
-                chunk.used_blocks += 1;
-                block.used = true;
-                return @ptrCast(@alignCast(block.data.ptr));
-            }
-        }
-
-        if (self.transform_chunks.items.len * MEMORY_POOL_BLOCK_SIZE < MEMORY_POOL_MAX_BLOCKS) {
-            const new_chunk = createMemoryChunk(
-                self.allocator,
-                @sizeOf(SpriteTransform),
-                MEMORY_POOL_BLOCK_SIZE,
-            ) catch return null;
-
-            self.transform_chunks.append(new_chunk) catch {
-                freeMemoryChunk(self.allocator, new_chunk);
-                return null;
-            };
-
-            const block = &new_chunk.blocks[0];
-            new_chunk.used_blocks = 1;
-            block.used = true;
-            return @ptrCast(@alignCast(block.data.ptr));
-        }
-
-        return null;
-    }
-
-    pub fn allocVertex(self: *SpriteMemoryPool) ?*Vertex {
-        if (self.free_vertices) |block| {
-            self.free_vertices = block.next;
-            block.used = true;
-            return @ptrCast(@alignCast(block.data.ptr));
-        }
-
-        for (self.vertex_chunks.items) |chunk| {
-            if (chunk.used_blocks < chunk.blocks.len) {
-                const block = &chunk.blocks[chunk.used_blocks];
-                chunk.used_blocks += 1;
-                block.used = true;
-                return @ptrCast(@alignCast(block.data.ptr));
-            }
-        }
-
-        if (self.vertex_chunks.items.len * MEMORY_POOL_BLOCK_SIZE < MEMORY_POOL_MAX_BLOCKS) {
-            const new_chunk = createMemoryChunk(
-                self.allocator,
-                @sizeOf(Vertex) * 4,
-                MEMORY_POOL_BLOCK_SIZE,
-            ) catch return null;
-
-            self.vertex_chunks.append(new_chunk) catch {
-                freeMemoryChunk(self.allocator, new_chunk);
-                return null;
-            };
-
-            const block = &new_chunk.blocks[0];
-            new_chunk.used_blocks = 1;
-            block.used = true;
-            return @ptrCast(@alignCast(block.data.ptr));
-        }
-
-        return null;
-    }
-
-    pub fn allocInstance(self: *SpriteMemoryPool) ?*SpriteInstance {
-        if (self.free_instances) |block| {
-            self.free_instances = block.next;
-            block.used = true;
-            return @ptrCast(@alignCast(block.data.ptr));
-        }
-
-        for (self.instance_chunks.items) |chunk| {
-            if (chunk.used_blocks < chunk.blocks.len) {
-                const block = &chunk.blocks[chunk.used_blocks];
-                chunk.used_blocks += 1;
-                block.used = true;
-                return @ptrCast(@alignCast(block.data.ptr));
-            }
-        }
-
-        if (self.instance_chunks.items.len * MEMORY_POOL_BLOCK_SIZE < MEMORY_POOL_MAX_BLOCKS) {
-            const new_chunk = createMemoryChunk(
-                self.allocator,
-                @sizeOf(SpriteInstance),
-                MEMORY_POOL_BLOCK_SIZE,
-            ) catch return null;
-
-            self.instance_chunks.append(new_chunk) catch {
-                freeMemoryChunk(self.allocator, new_chunk);
-                return null;
-            };
-
-            const block = &new_chunk.blocks[0];
-            new_chunk.used_blocks = 1;
-            block.used = true;
-            return @ptrCast(@alignCast(block.data.ptr));
-        }
-
-        return null;
-    }
-
-    pub fn freeTransform(self: *SpriteMemoryPool, ptr: *SpriteTransform) void {
-        const block_ptr = @as([*]u8, @ptrCast(ptr));
-
-        for (self.transform_chunks.items) |chunk| {
-            for (chunk.blocks) |*block| {
-                if (block.data.ptr == block_ptr) {
-                    block.used = false;
-                    block.next = self.free_transforms;
-                    self.free_transforms = block;
-                    return;
-                }
-            }
-        }
-    }
-
-    pub fn freeVertex(self: *SpriteMemoryPool, ptr: *Vertex) void {
-        const block_ptr = @as([*]u8, @ptrCast(ptr));
-
-        for (self.vertex_chunks.items) |chunk| {
-            for (chunk.blocks) |*block| {
-                if (block.data.ptr == block_ptr) {
-                    block.used = false;
-                    block.next = self.free_vertices;
-                    self.free_vertices = block;
-                    return;
-                }
-            }
-        }
-    }
-
-    pub fn freeInstance(self: *SpriteMemoryPool, ptr: *SpriteInstance) void {
-        const block_ptr = @as([*]u8, @ptrCast(ptr));
-
-        for (self.instance_chunks.items) |chunk| {
-            for (chunk.blocks) |*block| {
-                if (block.data.ptr == block_ptr) {
-                    block.used = false;
-                    block.next = self.free_instances;
-                    self.free_instances = block;
-                    return;
-                }
-            }
-        }
-    }
-};
-
-const ComputePipeline = struct {
-    pipeline: c.VkPipeline,
-    pipeline_layout: c.VkPipelineLayout,
-    descriptor_set_layout: c.VkDescriptorSetLayout,
-    descriptor_pool: c.VkDescriptorPool,
-    descriptor_sets: []c.VkDescriptorSet,
-
-    pub fn init(
-        device: c.VkDevice,
-        shader_module: c.VkShaderModule,
-        max_sets: u32,
-        alloc: std.mem.Allocator,
-    ) !ComputePipeline {
-        const binding_flags = c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-            c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-
-        const bindings = [_]c.VkDescriptorSetLayoutBinding{
             .{
                 .binding = 0,
-                .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-                .pImmutableSamplers = null,
+                .location = 1,
+                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = @offsetOf(SpriteInstance, "transform") + 1 * @sizeOf([4]f32),
             },
             .{
-                .binding = 1,
-                .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-                .pImmutableSamplers = null,
+                .binding = 0,
+                .location = 2,
+                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = @offsetOf(SpriteInstance, "transform") + 2 * @sizeOf([4]f32),
             },
             .{
-                .binding = 2,
-                .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = 1,
-                .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-                .pImmutableSamplers = null,
+                .binding = 0,
+                .location = 3,
+                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = @offsetOf(SpriteInstance, "transform") + 3 * @sizeOf([4]f32),
             },
-        };
 
-        const binding_flags_array = [_]c.VkDescriptorBindingFlags{
-            binding_flags, binding_flags, binding_flags,
-        };
-
-        const flags_info = c.VkDescriptorSetLayoutBindingFlagsCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-            .bindingCount = binding_flags_array.len,
-            .pBindingFlags = &binding_flags_array,
-            .pNext = null,
-        };
-
-        const layout_info = c.VkDescriptorSetLayoutCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-            .bindingCount = bindings.len,
-            .pBindings = &bindings,
-            .pNext = &flags_info,
-        };
-
-        var descriptor_set_layout: c.VkDescriptorSetLayout = undefined;
-        if (c.vkCreateDescriptorSetLayout(
-            device,
-            &layout_info,
-            null,
-            &descriptor_set_layout,
-        ) != c.VK_SUCCESS) {
-            return error.DescriptorSetLayoutCreationFailed;
-        }
-        errdefer c.vkDestroyDescriptorSetLayout(device, descriptor_set_layout, null);
-
-        const push_constant_range = c.VkPushConstantRange{
-            .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-            .offset = 0,
-            .size = @sizeOf(ComputePushConstants),
-        };
-
-        const pipeline_layout_info = c.VkPipelineLayoutCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1,
-            .pSetLayouts = &descriptor_set_layout,
-            .pushConstantRangeCount = 1,
-            .pPushConstantRanges = &push_constant_range,
-            .pNext = null,
-            .flags = 0,
-        };
-
-        var pipeline_layout: c.VkPipelineLayout = undefined;
-        if (c.vkCreatePipelineLayout(
-            device,
-            &pipeline_layout_info,
-            null,
-            &pipeline_layout,
-        ) != c.VK_SUCCESS) {
-            return error.PipelineLayoutCreationFailed;
-        }
-        errdefer c.vkDestroyPipelineLayout(device, pipeline_layout, null);
-
-        const pipeline_info = c.VkComputePipelineCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-            .stage = .{
-                .sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .stage = c.VK_SHADER_STAGE_COMPUTE_BIT,
-                .module = shader_module,
-                .pName = "main",
-                .pNext = null,
-                .flags = 0,
-                .pSpecializationInfo = null,
-            },
-            .layout = pipeline_layout,
-            .pNext = null,
-            .flags = 0,
-            .basePipelineHandle = null,
-            .basePipelineIndex = -1,
-        };
-
-        var pipeline: c.VkPipeline = undefined;
-        if (c.vkCreateComputePipelines(
-            device,
-            null,
-            1,
-            &pipeline_info,
-            null,
-            &pipeline,
-        ) != c.VK_SUCCESS) {
-            return error.ComputePipelineCreationFailed;
-        }
-        errdefer c.vkDestroyPipeline(device, pipeline, null);
-
-        const pool_sizes = [_]c.VkDescriptorPoolSize{
             .{
-                .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = max_sets * 3,
+                .binding = 0,
+                .location = 4,
+                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = @offsetOf(SpriteInstance, "color"),
+            },
+
+            .{
+                .binding = 0,
+                .location = 5,
+                .format = c.VK_FORMAT_R32G32B32A32_SFLOAT,
+                .offset = @offsetOf(SpriteInstance, "tex_rect"),
+            },
+
+            .{
+                .binding = 0,
+                .location = 6,
+                .format = c.VK_FORMAT_R32_UINT,
+                .offset = @offsetOf(SpriteInstance, "layer"),
             },
         };
-
-        const pool_info = c.VkDescriptorPoolCreateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-            .maxSets = max_sets,
-            .poolSizeCount = pool_sizes.len,
-            .pPoolSizes = &pool_sizes,
-            .pNext = null,
-        };
-
-        var descriptor_pool: c.VkDescriptorPool = undefined;
-        if (c.vkCreateDescriptorPool(
-            device,
-            &pool_info,
-            null,
-            &descriptor_pool,
-        ) != c.VK_SUCCESS) {
-            return error.DescriptorPoolCreationFailed;
-        }
-        errdefer c.vkDestroyDescriptorPool(device, descriptor_pool, null);
-
-        const layouts = try alloc.alloc(c.VkDescriptorSetLayout, max_sets);
-        defer alloc.free(layouts);
-        @memset(layouts, descriptor_set_layout);
-
-        const alloc_info = c.VkDescriptorSetAllocateInfo{
-            .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = descriptor_pool,
-            .descriptorSetCount = max_sets,
-            .pSetLayouts = layouts.ptr,
-            .pNext = null,
-        };
-
-        const descriptor_sets = try alloc.alloc(c.VkDescriptorSet, max_sets);
-        errdefer alloc.free(descriptor_sets);
-
-        if (c.vkAllocateDescriptorSets(
-            device,
-            &alloc_info,
-            descriptor_sets.ptr,
-        ) != c.VK_SUCCESS) {
-            return error.DescriptorSetAllocationFailed;
-        }
-
-        return ComputePipeline{
-            .pipeline = pipeline,
-            .pipeline_layout = pipeline_layout,
-            .descriptor_set_layout = descriptor_set_layout,
-            .descriptor_pool = descriptor_pool,
-            .descriptor_sets = descriptor_sets,
-        };
-    }
-
-    pub fn deinit(self: *ComputePipeline, device: c.VkDevice, alloc: std.mem.Allocator) void {
-        c.vkDestroyPipeline(device, self.pipeline, null);
-        c.vkDestroyPipelineLayout(device, self.pipeline_layout, null);
-        c.vkDestroyDescriptorSetLayout(device, self.descriptor_set_layout, null);
-        c.vkDestroyDescriptorPool(device, self.descriptor_pool, null);
-        alloc.free(self.descriptor_sets);
     }
 };
 
-const ComputePushConstants = extern struct {
-    view_proj: [16]f32 align(16),
-    frustum_planes: [6][4]f32 align(16),
-    sprite_count: u32,
-    padding: [3]u32,
-};
-
-const BatchKey = packed struct {
+const DrawBatch = struct {
+    instance_count: u32,
     texture_id: u32,
-    blend_mode: u4,
-    flags: u4,
-    _padding: u24 = 0,
-
-    pub fn hash(self: BatchKey) u32 {
-        var h: u32 = 2166136261;
-        const bytes = @as([*]const u8, @ptrCast(&self))[0..@sizeOf(BatchKey)];
-        for (bytes) |b| {
-            h = (h ^ b) *% 16777619;
-        }
-        return h;
-    }
-
-    pub fn eql(self: BatchKey, other: BatchKey) bool {
-        return @as(u32, @bitCast(self)) == @as(u32, @bitCast(other));
-    }
+    layer: u32,
+    flags: u32,
 };
 
-const BatchInfo = struct {
-    start_index: u32,
-    sprite_count: u32,
-    layer_min: f32,
-    layer_max: f32,
+pub const SpriteBatchStats = struct {
+    draw_calls: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    sprites_drawn: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    buffer_resizes: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    batch_breaks: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    peak_memory_usage: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    gpu_time_ns: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    cpu_time_ns: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    cache_hits: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
+    cache_misses: AtomicCounter align(CACHE_LINE_SIZE) = AtomicCounter.init(0),
 };
-
-const BatchTable = std.AutoHashMap(BatchKey, BatchInfo);
 
 pub const SpriteBatch = struct {
-    vertices: []Vertex,
-    indices: []u32,
-    instances: []SpriteInstance,
-    vertex_buffer: resources.Buffer,
-    index_buffer: resources.Buffer,
     instance_buffer: resources.Buffer,
-    cmd_pool: CommandBufferPool,
-    current_cmd: ?c.VkCommandBuffer,
+    staging_buffer: resources.Buffer,
+
+    draw_calls: std.ArrayList(DrawBatch),
+    current_batch: ?DrawBatch,
+
+    instance_data: std.ArrayList(SpriteInstance),
+
+    stats: SpriteBatchStats,
+    buffers_need_update: bool = false,
+
     device: c.VkDevice,
-    instance: c.VkInstance,
+    physical_device: c.VkPhysicalDevice,
+    queue_family: u32,
     allocator: std.mem.Allocator,
-    sprite_count: u32,
-    instance_count: u32,
     max_sprites: u32,
-    has_compute: bool,
-    mapped_vertices: ?[*]Vertex,
-    mapped_indices: ?[*]u32,
-    mapped_instances: ?[*]SpriteInstance,
-    sort_keys: []SortKey,
-    draw_calls: std.ArrayList(DrawCall),
-    compute_pipeline: ComputePipeline,
-    memory_pool: SpriteMemoryPool,
-    transform_buffer: resources.Buffer,
-    compute_cmd: ?c.VkCommandBuffer,
-    batch_table: BatchTable,
-    batch_keys: []BatchKey,
 
-    const VERTEX_BUFFER_ALIGNMENT = 256;
-    const INDEX_BUFFER_ALIGNMENT = 64;
-    const INSTANCE_BUFFER_ALIGNMENT = 256;
-    const DEFAULT_MAX_SPRITES = 10000;
-    const VERTICES_PER_SPRITE = 4;
-    const INDICES_PER_SPRITE = 6;
-    const MAX_COMMAND_BUFFERS = 32;
-
-    const DrawCall = struct {
-        first_index: u32,
-        index_count: u32,
-        instance_count: u32,
-        texture_id: u32,
-        blend_mode: u4,
-    };
+    command_pool: c.VkCommandPool,
+    transfer_queue: c.VkQueue,
 
     pub fn init(
         device: c.VkDevice,
@@ -807,252 +136,107 @@ pub const SpriteBatch = struct {
         physical_device: c.VkPhysicalDevice,
         queue_family: u32,
         max_sprites: u32,
-        compute_shader_code: ?[]const u8,
-        alloc: std.mem.Allocator,
+        compute_shader: ?[]const u8,
+        allocator: std.mem.Allocator,
     ) !*SpriteBatch {
-        logger.info("spritebatch: initializing with capacity for {d} sprites", .{max_sprites});
+        _ = instance;
+        _ = compute_shader;
 
-        const actual_max_sprites = if (max_sprites == 0) DEFAULT_MAX_SPRITES else max_sprites;
+        const self = try allocator.create(SpriteBatch);
+        errdefer allocator.destroy(self);
 
-        const vertex_size = @sizeOf(Vertex) * actual_max_sprites * VERTICES_PER_SPRITE;
-        const index_size = @sizeOf(u32) * actual_max_sprites * INDICES_PER_SPRITE;
-        const instance_size = @sizeOf(SpriteInstance) * actual_max_sprites;
+        self.device = device;
+        self.physical_device = physical_device;
+        self.queue_family = queue_family;
+        self.allocator = allocator;
+        self.max_sprites = max_sprites;
+        self.current_batch = null;
 
-        const vertices = try alloc.alloc(Vertex, actual_max_sprites * VERTICES_PER_SPRITE);
-        errdefer alloc.free(vertices);
-
-        const indices = try alloc.alloc(u32, actual_max_sprites * INDICES_PER_SPRITE);
-        errdefer alloc.free(indices);
-
-        const instances = try alloc.alloc(SpriteInstance, actual_max_sprites);
-        errdefer alloc.free(instances);
-
-        if (vertex_size > 256 * 1024 * 1024) {
-            logger.warn("spritebatch: large vertex buffer ({d} MB), consider reducing sprite count", .{
-                vertex_size / (1024 * 1024),
-            });
-        }
-
-        if (instance_size > 128 * 1024 * 1024) {
-            logger.warn("spritebatch: large instance buffer ({d} MB), consider reducing sprite count", .{
-                instance_size / (1024 * 1024),
-            });
-        }
-
-        var vertex_buffer = try resources.Buffer.init(
-            device,
-            physical_device,
-            vertex_size,
-            c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        );
-        errdefer vertex_buffer.deinit();
-
-        var index_buffer = try resources.Buffer.init(
-            device,
-            physical_device,
-            index_size,
-            c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        );
-        errdefer index_buffer.deinit();
-
-        var instance_buffer = try resources.Buffer.init(
-            device,
-            physical_device,
-            instance_size,
-            c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        );
-        errdefer instance_buffer.deinit();
-
-        var draw_calls = std.ArrayList(DrawCall).init(alloc);
-        errdefer draw_calls.deinit();
-
-        var i: u32 = 0;
-        while (i < actual_max_sprites) : (i += 1) {
-            const base = i * VERTICES_PER_SPRITE;
-            const idx = i * INDICES_PER_SPRITE;
-            indices[idx + 0] = base + 0;
-            indices[idx + 1] = base + 2;
-            indices[idx + 2] = base + 1;
-            indices[idx + 3] = base + 0;
-            indices[idx + 4] = base + 3;
-            indices[idx + 5] = base + 2;
-        }
-
-        var cmd_pool = try CommandBufferPool.init(device, instance, queue_family, MAX_COMMAND_BUFFERS, alloc);
-        errdefer cmd_pool.deinit(alloc);
-
-        try vertex_buffer.map();
-        try index_buffer.map();
-        try instance_buffer.map();
-
-        const self = try alloc.create(SpriteBatch);
-        errdefer alloc.destroy(self);
-
-        self.* = .{
-            .vertices = vertices,
-            .indices = indices,
-            .instances = instances,
-            .vertex_buffer = vertex_buffer,
-            .index_buffer = index_buffer,
-            .instance_buffer = instance_buffer,
-            .cmd_pool = cmd_pool,
-            .current_cmd = null,
-            .device = device,
-            .instance = instance,
-            .allocator = alloc,
-            .sprite_count = 0,
-            .instance_count = 0,
-            .max_sprites = actual_max_sprites,
-            .has_compute = false,
-            .mapped_vertices = @ptrCast(@alignCast(vertex_buffer.mapped_data.?)),
-            .mapped_indices = @ptrCast(@alignCast(index_buffer.mapped_data.?)),
-            .mapped_instances = @ptrCast(@alignCast(instance_buffer.mapped_data.?)),
-            .sort_keys = try alloc.alloc(SortKey, actual_max_sprites),
-            .draw_calls = draw_calls,
-            .compute_pipeline = undefined,
-            .memory_pool = undefined,
-            .transform_buffer = undefined,
-            .compute_cmd = null,
-            .batch_table = BatchTable.init(alloc),
-            .batch_keys = try alloc.alloc(BatchKey, actual_max_sprites),
+        const pool_info = c.VkCommandPoolCreateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .queueFamilyIndex = queue_family,
+            .flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .pNext = null,
         };
 
-        @memcpy(
-            @as([*]u8, @ptrCast(@alignCast(self.mapped_indices.?)))[0..index_size],
-            @as([*]const u8, @ptrCast(@alignCast(indices.ptr)))[0..index_size],
-        );
-
-        if (compute_shader_code != null) {
-            logger.info("spritebatch: initializing compute pipeline for hardware acceleration", .{});
-
-            const create_info = c.VkShaderModuleCreateInfo{
-                .sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                .codeSize = compute_shader_code.?.len,
-                .pCode = @ptrCast(@alignCast(compute_shader_code.?.ptr)),
-                .flags = 0,
-                .pNext = null,
-            };
-
-            var shader_module: c.VkShaderModule = undefined;
-            const result = c.vkCreateShaderModule(device, &create_info, null, &shader_module);
-            if (result != c.VK_SUCCESS) {
-                logger.err("spritebatch: failed to create compute shader module", .{});
-                return error.ShaderModuleCreationFailed;
-            }
-            defer c.vkDestroyShaderModule(device, shader_module, null);
-
-            var compute_pipeline = try ComputePipeline.init(
-                device,
-                shader_module,
-                MAX_COMMAND_BUFFERS,
-                alloc,
-            );
-            errdefer compute_pipeline.deinit(device, alloc);
-
-            var memory_pool = try SpriteMemoryPool.init(max_sprites, alloc);
-            errdefer memory_pool.deinit();
-
-            const transform_size = @sizeOf(SpriteTransform) * max_sprites;
-            var transform_buffer = try resources.Buffer.init(
-                device,
-                physical_device,
-                transform_size,
-                c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            );
-            errdefer transform_buffer.deinit();
-
-            self.compute_pipeline = compute_pipeline;
-            self.memory_pool = memory_pool;
-            self.transform_buffer = transform_buffer;
-            self.has_compute = true;
+        if (c.vkCreateCommandPool(device, &pool_info, null, &self.command_pool) != c.VK_SUCCESS) {
+            return error.CommandPoolCreationFailed;
         }
-        self.compute_cmd = null;
+        errdefer c.vkDestroyCommandPool(device, self.command_pool, null);
 
-        logger.info("spritebatch: initialized successfully\n  Vertex buffer: {d} KB ({d} vertices)\n  Index buffer: {d} KB ({d} indices)\n  Instance buffer: {d} KB ({d} instances)", .{
-            vertex_size / 1024,
-            actual_max_sprites * VERTICES_PER_SPRITE,
-            index_size / 1024,
-            actual_max_sprites * INDICES_PER_SPRITE,
-            instance_size / 1024,
-            actual_max_sprites,
-        });
+        c.vkGetDeviceQueue(device, queue_family, 0, &self.transfer_queue);
+
+        self.staging_buffer = try resources.Buffer.init(
+            device,
+            physical_device,
+            MEMORY_POOL_CONFIG.STAGING_BLOCK_SIZE,
+            c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        );
+        errdefer self.staging_buffer.deinit();
+
+        self.instance_buffer = try resources.Buffer.init(
+            device,
+            physical_device,
+            INSTANCE_BUFFER_SIZE,
+            c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT | c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        );
+        errdefer self.instance_buffer.deinit();
+
+        self.draw_calls = try std.ArrayList(DrawBatch).initCapacity(allocator, 64);
+        self.instance_data = try std.ArrayList(SpriteInstance).initCapacity(allocator, max_sprites);
+
+        self.stats = .{};
+
+        logger.info("sprite: initialized batch renderer (max sprites: {d}, queue family: {d})", .{ max_sprites, queue_family });
         return self;
     }
 
     pub fn deinit(self: *SpriteBatch) void {
-        logger.info("spritebatch: shutting down", .{});
+        _ = c.vkDeviceWaitIdle(self.device);
 
-        if (c.vkDeviceWaitIdle(self.device) != c.VK_SUCCESS) {
-            logger.err("spritebatch: failed to wait for device idle", .{});
-        }
+        self.instance_buffer.deinit();
+        self.staging_buffer.deinit();
 
-        self.cmd_pool.reset();
+        c.vkDestroyCommandPool(self.device, self.command_pool, null);
 
         self.draw_calls.deinit();
+        self.instance_data.deinit();
 
-        self.vertex_buffer.unmap();
-        self.index_buffer.unmap();
-        self.instance_buffer.unmap();
-
-        self.current_cmd = null;
-
-        self.vertex_buffer.deinit();
-        self.index_buffer.deinit();
-        self.instance_buffer.deinit();
-
-        self.cmd_pool.deinit(self.allocator);
-
-        if (self.has_compute) {
-            self.compute_pipeline.deinit(self.device, self.allocator);
-            self.memory_pool.deinit();
-            self.transform_buffer.deinit();
-        }
-
-        self.allocator.free(self.vertices);
-        self.allocator.free(self.indices);
-        self.allocator.free(self.instances);
-        self.allocator.free(self.sort_keys);
-        self.batch_table.deinit();
-        self.allocator.free(self.batch_keys);
         self.allocator.destroy(self);
     }
 
-    pub fn begin(self: *SpriteBatch) !void {
-        if (self.current_cmd != null) {
-            if (c.vkDeviceWaitIdle(self.device) != c.VK_SUCCESS) {
-                return error.DeviceWaitFailed;
-            }
-
-            if (c.vkResetCommandBuffer(self.current_cmd.?, 0) != c.VK_SUCCESS) {
-                return error.CommandBufferResetFailed;
-            }
+    pub fn begin(self: *SpriteBatch) void {
+        self.draw_calls.clearRetainingCapacity();
+        if (self.buffers_need_update) {
+            self.instance_data.clearRetainingCapacity();
         }
+        self.current_batch = null;
 
-        const cmd_buffer = blk: {
-            break :blk self.cmd_pool.getNextBuffer() catch |err| {
-                switch (err) {
-                    error.NoCommandBuffersAvailable => {
-                        if (c.vkDeviceWaitIdle(self.device) != c.VK_SUCCESS) {
-                            return error.DeviceWaitFailed;
-                        }
+        const start_time = std.time.nanoTimestamp();
+        _ = self.stats.cpu_time_ns.store(@as(u64, @intCast(@max(0, start_time))), .release);
+    }
 
-                        self.cmd_pool.reset();
-
-                        break :blk try self.cmd_pool.getNextBuffer();
-                    },
-                    else => return err,
-                }
-            };
+    fn transferToDeviceLocal(
+        self: *SpriteBatch,
+        staging_buffer: *const resources.Buffer,
+        device_buffer: *resources.Buffer,
+        size: usize,
+    ) !void {
+        var command_buffer: c.VkCommandBuffer = undefined;
+        const alloc_info = c.VkCommandBufferAllocateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = self.command_pool,
+            .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+            .pNext = null,
         };
 
-        self.current_cmd = cmd_buffer;
-        self.sprite_count = 0;
-        self.instance_count = 0;
-        self.draw_calls.clearRetainingCapacity();
+        if (c.vkAllocateCommandBuffers(self.device, &alloc_info, &command_buffer) != c.VK_SUCCESS) {
+            return error.CommandBufferAllocationFailed;
+        }
+        defer c.vkFreeCommandBuffers(self.device, self.command_pool, 1, &command_buffer);
 
         const begin_info = c.VkCommandBufferBeginInfo{
             .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1061,217 +245,199 @@ pub const SpriteBatch = struct {
             .pNext = null,
         };
 
-        if (c.vkBeginCommandBuffer(self.current_cmd.?, &begin_info) != c.VK_SUCCESS) {
+        if (c.vkBeginCommandBuffer(command_buffer, &begin_info) != c.VK_SUCCESS) {
             return error.CommandBufferBeginFailed;
         }
-    }
 
-    pub fn end(self: *SpriteBatch) !void {
-        if (self.sprite_count == 0) {
-            if (self.current_cmd) |cmd| {
-                if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) {
-                    logger.err("spritebatch: failed to end empty command buffer", .{});
-                    return error.CommandBufferEndFailed;
-                }
-                self.cmd_pool.reset();
-            }
-            self.current_cmd = null;
-            return;
-        }
+        const copy_region = c.VkBufferCopy{
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size = size,
+        };
 
-        if (self.sprite_count > 1) {
-            std.sort.pdq(SortKey, self.sort_keys[0..self.sprite_count], {}, compareSortKeys);
-        }
+        c.vkCmdCopyBuffer(
+            command_buffer,
+            staging_buffer.handle,
+            device_buffer.handle,
+            1,
+            &copy_region,
+        );
 
-        self.batch_table.clearRetainingCapacity();
-
-        var current_batch: ?BatchInfo = null;
-        var current_key: ?BatchKey = null;
-        var batch_start: u32 = 0;
-
-        for (0..self.sprite_count) |i| {
-            const key = BatchKey{
-                .texture_id = self.sort_keys[i].texture_id,
-                .blend_mode = self.sort_keys[i].blend_mode,
-                .flags = self.sort_keys[i].flags,
-                ._padding = 0,
-            };
-
-            const layer = @as(f32, @floatFromInt(self.sort_keys[i].layer)) / 65535.0;
-
-            if (current_key) |prev_key| {
-                if (!std.meta.eql(prev_key, key)) {
-                    try self.batch_table.put(prev_key, current_batch.?);
-
-                    batch_start = @intCast(i);
-                    current_batch = BatchInfo{
-                        .start_index = batch_start,
-                        .sprite_count = 1,
-                        .layer_min = layer,
-                        .layer_max = layer,
-                    };
-                    current_key = key;
-                } else {
-                    current_batch.?.sprite_count += 1;
-                    current_batch.?.layer_max = @max(current_batch.?.layer_max, layer);
-                }
-            } else {
-                current_batch = BatchInfo{
-                    .start_index = 0,
-                    .sprite_count = 1,
-                    .layer_min = layer,
-                    .layer_max = layer,
-                };
-                current_key = key;
-            }
-        }
-
-        if (current_key != null and current_batch != null) {
-            try self.batch_table.put(current_key.?, current_batch.?);
-        }
-
-        var it = self.batch_table.iterator();
-        while (it.next()) |entry| {
-            const info = entry.value_ptr.*;
-            try self.draw_calls.append(.{
-                .first_index = info.start_index * INDICES_PER_SPRITE,
-                .index_count = info.sprite_count * INDICES_PER_SPRITE,
-                .instance_count = 1,
-                .texture_id = entry.key_ptr.texture_id,
-                .blend_mode = entry.key_ptr.blend_mode,
-            });
-        }
-
-        const vertex_size = @sizeOf(Vertex) * self.sprite_count * VERTICES_PER_SPRITE;
-        const instance_size = @sizeOf(SpriteInstance) * self.instance_count;
-
-        if (vertex_size > 0) {
-            @memcpy(
-                @as([*]u8, @ptrCast(@alignCast(self.mapped_vertices.?)))[0..vertex_size],
-                @as([*]const u8, @ptrCast(@alignCast(self.vertices.ptr)))[0..vertex_size],
-            );
-        }
-
-        if (instance_size > 0) {
-            @memcpy(
-                @as([*]u8, @ptrCast(@alignCast(self.mapped_instances.?)))[0..instance_size],
-                @as([*]const u8, @ptrCast(@alignCast(self.instances.ptr)))[0..instance_size],
-            );
-        }
-
-        if (c.vkEndCommandBuffer(self.current_cmd.?) != c.VK_SUCCESS) {
-            logger.err("spritebatch: failed to end command buffer recording", .{});
+        if (c.vkEndCommandBuffer(command_buffer) != c.VK_SUCCESS) {
             return error.CommandBufferEndFailed;
         }
 
-        self.cmd_pool.reset();
+        const submit_info = c.VkSubmitInfo{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &command_buffer,
+            .waitSemaphoreCount = 0,
+            .pWaitSemaphores = null,
+            .pWaitDstStageMask = null,
+            .signalSemaphoreCount = 0,
+            .pSignalSemaphores = null,
+            .pNext = null,
+        };
+
+        if (c.vkQueueSubmit(self.transfer_queue, 1, &submit_info, null) != c.VK_SUCCESS) {
+            return error.QueueSubmitFailed;
+        }
+
+        if (c.vkQueueWaitIdle(self.transfer_queue) != c.VK_SUCCESS) {
+            return error.QueueWaitFailed;
+        }
     }
 
-    pub fn draw(
+    fn resizeBuffer(
         self: *SpriteBatch,
-        position: [2]f32,
-        size: [2]f32,
+        buffer: *resources.Buffer,
+        new_size: usize,
+        usage: c.VkBufferUsageFlags,
+        memory_properties: c.VkMemoryPropertyFlags,
+    ) !void {
+        const aligned_size = std.mem.alignForward(usize, new_size, INSTANCE_BUFFER_ALIGNMENT);
+
+        if (aligned_size == buffer.size) return;
+
+        if (aligned_size < buffer.size) {
+            const current_usage = @as(f32, @floatFromInt(new_size)) / @as(f32, @floatFromInt(buffer.size));
+            if (current_usage > BUFFER_SHRINK_THRESHOLD) return;
+        }
+
+        var old_buffer = buffer.*;
+
+        buffer.* = try resources.Buffer.init(
+            self.device,
+            self.physical_device,
+            aligned_size,
+            usage,
+            memory_properties,
+        );
+
+        if (old_buffer.size > 0) {
+            try self.transferToDeviceLocal(&old_buffer, buffer, @min(old_buffer.size, aligned_size));
+        }
+
+        old_buffer.deinit();
+        _ = self.stats.buffer_resizes.fetchAdd(1, .monotonic);
+    }
+
+    pub fn end(self: *SpriteBatch) !void {
+        const start_time = std.time.nanoTimestamp();
+        _ = self.stats.cpu_time_ns.store(@as(u64, @intCast(@max(0, start_time))), .release);
+
+        if (self.current_batch) |batch| {
+            try self.draw_calls.append(batch);
+            self.current_batch = null;
+        }
+
+        if (self.buffers_need_update) {
+            if (self.instance_data.items.len > 0) {
+                const instance_size = self.instance_data.items.len * @sizeOf(SpriteInstance);
+
+                if (instance_size > self.instance_buffer.size) {
+                    const new_size = @max(
+                        @as(usize, @intFromFloat(@as(f32, @floatFromInt(instance_size)) * BUFFER_GROWTH_FACTOR)),
+                        MEMORY_POOL_CONFIG.MIN_ALLOCATION_SIZE,
+                    );
+                    try self.resizeBuffer(
+                        &self.instance_buffer,
+                        new_size,
+                        c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    );
+                }
+
+                try self.staging_buffer.map();
+                defer self.staging_buffer.unmap();
+
+                const instance_bytes = std.mem.sliceAsBytes(self.instance_data.items);
+                try self.staging_buffer.copy(instance_bytes);
+                try self.transferToDeviceLocal(&self.staging_buffer, &self.instance_buffer, instance_size);
+            }
+
+            self.buffers_need_update = false;
+        }
+
+        _ = self.stats.draw_calls.fetchAdd(self.draw_calls.items.len, .monotonic);
+        _ = self.stats.sprites_drawn.fetchAdd(self.instance_data.items.len, .monotonic);
+        const total_memory = self.instance_buffer.size;
+        _ = self.stats.peak_memory_usage.fetchMax(total_memory, .monotonic);
+
+        const end_time = std.time.nanoTimestamp();
+        const elapsed = @as(u64, @intCast(@max(0, end_time - start_time)));
+        _ = self.stats.cpu_time_ns.store(elapsed, .release);
+
+        if (self.instance_data.items.len > 0 and
+            self.instance_data.items.len % CACHE_LINE_SIZE == 0)
+        {
+            _ = self.stats.cache_hits.fetchAdd(1, .monotonic);
+        }
+    }
+
+    pub fn drawSprite(
+        self: *SpriteBatch,
+        position: math.Vec2,
+        size: math.Vec2,
         rotation: f32,
         color: [4]f32,
         texture_id: u32,
-        uv_rect: [4]f32,
-        layer: f32,
+        layer: u32,
         flags: u32,
     ) !void {
-        if (self.sprite_count >= self.max_sprites) {
-            logger.err("spritebatch: exceeded maximum sprite count\nPossible solutions:\n1. Increase capacity (current: {d})\n2. Split into multiple batches\n3. Enable instancing for similar sprites", .{self.max_sprites});
-            return error.BatchFull;
+        if (self.instance_data.items.len >= self.max_sprites) {
+            return error.MaxSpritesExceeded;
         }
 
-        if (size[0] * size[1] > 1000 * 1000) {
-            logger.warn("spritebatch: large sprite detected ({d}x{d}), consider texture optimization", .{
-                @as(u32, @intFromFloat(size[0])),
-                @as(u32, @intFromFloat(size[1])),
-            });
-        }
+        self.buffers_need_update = true;
 
-        self.sort_keys[self.sprite_count] = .{
-            .layer = @intFromFloat(layer * 65535.0),
-            .texture_id = @intCast(texture_id & 0xFF),
-            .blend_mode = @intCast((flags >> 28) & 0xF),
-            .flags = @intCast((flags >> 24) & 0xF),
-        };
+        const need_new_batch = if (self.current_batch) |batch|
+            batch.texture_id != texture_id or
+                batch.layer != layer or
+                batch.instance_count >= MAX_SPRITES_PER_BATCH
+        else
+            true;
 
-        const half_width = size[0] * 0.5;
-        const half_height = size[1] * 0.5;
-
-        const cos_r = @cos(rotation);
-        const sin_r = @sin(rotation);
-
-        const transform_x = [2]f32{ cos_r * half_width, sin_r * half_width };
-        const transform_y = [2]f32{ sin_r * half_height, -cos_r * half_height };
-
-        const vertex_offset = self.sprite_count * VERTICES_PER_SPRITE;
-
-        self.vertices[vertex_offset + 0] = .{
-            .position = .{
-                position[0] - transform_x[0] + transform_y[0],
-                position[1] - transform_x[1] + transform_y[1],
-            },
-            .uv = .{ uv_rect[0], uv_rect[1] },
-            .color = color,
-        };
-
-        self.vertices[vertex_offset + 1] = .{
-            .position = .{
-                position[0] + transform_x[0] + transform_y[0],
-                position[1] + transform_x[1] + transform_y[1],
-            },
-            .uv = .{ uv_rect[2], uv_rect[1] },
-            .color = color,
-        };
-
-        self.vertices[vertex_offset + 2] = .{
-            .position = .{
-                position[0] + transform_x[0] - transform_y[0],
-                position[1] + transform_x[1] - transform_y[1],
-            },
-            .uv = .{ uv_rect[2], uv_rect[3] },
-            .color = color,
-        };
-
-        self.vertices[vertex_offset + 3] = .{
-            .position = .{
-                position[0] - transform_x[0] - transform_y[0],
-                position[1] - transform_x[1] - transform_y[1],
-            },
-            .uv = .{ uv_rect[0], uv_rect[3] },
-            .color = color,
-        };
-
-        if (flags & SPRITE_FLAG_USE_INSTANCING != 0) {
-            self.instances[self.instance_count] = .{
-                .model = calculateModelMatrix(position, size, rotation),
-                .color_and_uv = .{ color[0], color[1], color[2], color[3] },
-                .metadata = .{
-                    .layer = layer,
-                    .texture_id = texture_id & 0xFF,
-                    .flags = flags,
-                    ._padding = 0,
-                },
+        if (need_new_batch) {
+            if (self.current_batch) |batch| {
+                try self.draw_calls.append(batch);
+                _ = self.stats.batch_breaks.fetchAdd(1, .monotonic);
+            }
+            self.current_batch = .{
+                .instance_count = 1,
+                .texture_id = texture_id,
+                .layer = layer,
+                .flags = flags,
             };
-            self.instance_count += 1;
+        } else if (self.current_batch) |*batch| {
+            batch.instance_count += 1;
         }
 
-        self.sprite_count += 1;
+        var transform = math.Mat4.identity();
+        transform = transform.mul(math.Mat4.scale(size.x() * 2.0, size.y() * 2.0, 1));
+        transform = transform.mul(math.Mat4.rotate(rotation, 0, 0, 1));
+        transform = transform.mul(math.Mat4.translate(position.x(), position.y(), 0));
+
+        try self.instance_data.append(.{
+            .transform = transform.toArray2D(),
+            .color = color,
+            .tex_rect = .{ 0, 0, 1, 1 },
+            .layer = layer,
+            .flags = flags,
+        });
+
+        if (self.instance_data.items.len > 0 and
+            self.instance_data.items.len % CACHE_LINE_SIZE == 0)
+        {
+            _ = self.stats.cache_hits.fetchAdd(1, .monotonic);
+        }
     }
 
-    pub const SPRITE_FLAG_USE_INSTANCING = 1 << 0;
-    pub const SPRITE_FLAG_FLIP_X = 1 << 1;
-    pub const SPRITE_FLAG_FLIP_Y = 1 << 2;
-    pub const SPRITE_FLAG_NO_DEPTH = 1 << 3;
+    pub fn getStats(self: *const SpriteBatch) SpriteBatchStats {
+        return self.stats;
+    }
 
-    pub const Error = error{
-        BatchFull,
-        CommandBufferBeginFailed,
-        CommandBufferEndFailed,
-        CommandBufferResetFailed,
-        NoCommandBuffersAvailable,
-        DeviceWaitFailed,
-    };
+    pub fn resetStats(self: *SpriteBatch) void {
+        self.stats = .{};
+    }
 };

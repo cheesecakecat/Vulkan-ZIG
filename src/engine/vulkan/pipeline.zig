@@ -27,6 +27,11 @@ const PipelineConfigKey = struct {
     }
 };
 
+const ColorBlendState = struct {
+    attachment: c.VkPipelineColorBlendAttachmentState,
+    state: c.VkPipelineColorBlendStateCreateInfo,
+};
+
 pub const Pipeline = struct {
     pipeline: c.VkPipeline,
     pipeline_layout: c.VkPipelineLayout,
@@ -61,19 +66,19 @@ pub const Pipeline = struct {
         texture_array_layers: u32,
     };
 
-    fn createColorBlendState(config: PipelineConfigKey) struct {
-        attachment: c.VkPipelineColorBlendAttachmentState,
-        state: c.VkPipelineColorBlendStateCreateInfo,
-    } {
+    fn createColorBlendState() ColorBlendState {
         const attachment = c.VkPipelineColorBlendAttachmentState{
-            .colorWriteMask = config.color_write_mask,
-            .blendEnable = if (config.blend_enable) c.VK_TRUE else c.VK_FALSE,
+            .blendEnable = c.VK_TRUE,
             .srcColorBlendFactor = c.VK_BLEND_FACTOR_SRC_ALPHA,
             .dstColorBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
             .colorBlendOp = c.VK_BLEND_OP_ADD,
             .srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO,
+            .dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
             .alphaBlendOp = c.VK_BLEND_OP_ADD,
+            .colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT |
+                c.VK_COLOR_COMPONENT_G_BIT |
+                c.VK_COLOR_COMPONENT_B_BIT |
+                c.VK_COLOR_COMPONENT_A_BIT,
         };
 
         return .{
@@ -298,23 +303,23 @@ pub const Pipeline = struct {
             .pNext = null,
         };
 
-        const binding_description = sprite.Vertex.getBindingDescription();
-        const attribute_descriptions = sprite.Vertex.getAttributeDescriptions();
+        const instance_binding = sprite.SpriteInstance.getBindingDescription();
+        const instance_attributes = sprite.SpriteInstance.getAttributeDescriptions();
 
         const vertex_input_info = c.VkPipelineVertexInputStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             .vertexBindingDescriptionCount = 1,
-            .pVertexBindingDescriptions = &binding_description,
-            .vertexAttributeDescriptionCount = attribute_descriptions.len,
-            .pVertexAttributeDescriptions = &attribute_descriptions,
+            .pVertexBindingDescriptions = &instance_binding,
+            .vertexAttributeDescriptionCount = instance_attributes.len,
+            .pVertexAttributeDescriptions = &instance_attributes,
             .flags = 0,
             .pNext = null,
         };
 
         const input_assembly = c.VkPipelineInputAssemblyStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-            .primitiveRestartEnable = c.VK_FALSE,
+            .topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+            .primitiveRestartEnable = c.VK_TRUE,
             .flags = 0,
             .pNext = null,
         };
@@ -371,12 +376,7 @@ pub const Pipeline = struct {
             .pNext = null,
         };
 
-        const base_blend = createColorBlendState(.{
-            .blend_enable = true,
-            .cull_mode = c.VK_CULL_MODE_NONE,
-            .depth_test = false,
-            .color_write_mask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
-        });
+        const base_blend = createColorBlendState();
 
         self.blend_attachment = base_blend.attachment;
         self.blend_state = base_blend.state;

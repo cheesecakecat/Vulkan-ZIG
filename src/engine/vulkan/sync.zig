@@ -183,26 +183,44 @@ pub const SyncObjects = struct {
 
         const fence_info = c.VkFenceCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-            .flags = config.fence_flags,
+            .flags = config.fence_flags | c.VK_FENCE_CREATE_SIGNALED_BIT,
             .pNext = null,
         };
 
         var i: u32 = 0;
         while (i < config.max_frames_in_flight) : (i += 1) {
             if (c.vkCreateSemaphore(device, &binary_semaphore_info, null, &image_available_semaphores[i]) != c.VK_SUCCESS) {
+                logger.err("sync: failed to create image available semaphore {}", .{i});
+                var j: u32 = 0;
+                while (j < i) : (j += 1) {
+                    c.vkDestroySemaphore(device, image_available_semaphores[j], null);
+                }
                 return error.SemaphoreCreationFailed;
             }
-            errdefer c.vkDestroySemaphore(device, image_available_semaphores[i], null);
 
             if (c.vkCreateSemaphore(device, &binary_semaphore_info, null, &render_finished_semaphores[i]) != c.VK_SUCCESS) {
+                logger.err("sync: failed to create render finished semaphore {}", .{i});
+                c.vkDestroySemaphore(device, image_available_semaphores[i], null);
+                var j: u32 = 0;
+                while (j < i) : (j += 1) {
+                    c.vkDestroySemaphore(device, image_available_semaphores[j], null);
+                    c.vkDestroySemaphore(device, render_finished_semaphores[j], null);
+                }
                 return error.SemaphoreCreationFailed;
             }
-            errdefer c.vkDestroySemaphore(device, render_finished_semaphores[i], null);
 
             if (c.vkCreateFence(device, &fence_info, null, &in_flight_fences[i]) != c.VK_SUCCESS) {
+                logger.err("sync: failed to create in-flight fence {}", .{i});
+                c.vkDestroySemaphore(device, image_available_semaphores[i], null);
+                c.vkDestroySemaphore(device, render_finished_semaphores[i], null);
+                var j: u32 = 0;
+                while (j < i) : (j += 1) {
+                    c.vkDestroySemaphore(device, image_available_semaphores[j], null);
+                    c.vkDestroySemaphore(device, render_finished_semaphores[j], null);
+                    c.vkDestroyFence(device, in_flight_fences[j], null);
+                }
                 return error.FenceCreationFailed;
             }
-            errdefer c.vkDestroyFence(device, in_flight_fences[i], null);
         }
 
         const stats = if (config.enable_validation)
@@ -241,12 +259,20 @@ pub const SyncObjects = struct {
 
         var i: u32 = 0;
         while (i < self.max_frames_in_flight) : (i += 1) {
-            c.vkDestroySemaphore(self.device, self.image_available_semaphores[i], null);
-            c.vkDestroySemaphore(self.device, self.render_finished_semaphores[i], null);
-            c.vkDestroyFence(self.device, self.in_flight_fences[i], null);
+            if (self.image_available_semaphores[i] != null) {
+                c.vkDestroySemaphore(self.device, self.image_available_semaphores[i], null);
+            }
+            if (self.render_finished_semaphores[i] != null) {
+                c.vkDestroySemaphore(self.device, self.render_finished_semaphores[i], null);
+            }
+            if (self.in_flight_fences[i] != null) {
+                c.vkDestroyFence(self.device, self.in_flight_fences[i], null);
+            }
         }
 
-        c.vkDestroySemaphore(self.device, self.frame_pacing_semaphore, null);
+        if (self.frame_pacing_semaphore != null) {
+            c.vkDestroySemaphore(self.device, self.frame_pacing_semaphore, null);
+        }
 
         self.allocator.free(self.image_available_semaphores);
         self.allocator.free(self.render_finished_semaphores);

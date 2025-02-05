@@ -50,6 +50,14 @@ pub const Vec2 = extern struct {
         return @reduce(.Add, self.data * other.data);
     }
 
+    pub inline fn min(self: Self, other: Self) Self {
+        return .{ .data = @min(self.data, other.data) };
+    }
+
+    pub inline fn max(self: Self, other: Self) Self {
+        return .{ .data = @max(self.data, other.data) };
+    }
+
     pub inline fn length2(self: Self) f32 {
         return self.dot(self);
     }

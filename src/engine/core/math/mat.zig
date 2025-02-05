@@ -1,6 +1,7 @@
 const std = @import("std");
 const vec = @import("vec.zig");
 const Vec4 = vec.Vec4;
+const Vec2 = vec.Vec2;
 
 pub const Mat4 = extern struct {
     rows: [4]Vec4 align(16),
@@ -16,6 +17,15 @@ pub const Mat4 = extern struct {
                 Vec4.init(0, 0, 0, 1),
             },
         };
+    }
+
+    pub inline fn translation(tx: f32, ty: f32, tz: f32) Self {
+        return fromRows(
+            Vec4.init(1, 0, 0, 0),
+            Vec4.init(0, 1, 0, 0),
+            Vec4.init(0, 0, 1, 0),
+            Vec4.init(tx, ty, tz, 1),
+        );
     }
 
     pub inline fn fromRows(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) Self {
@@ -175,5 +185,214 @@ pub const Mat4 = extern struct {
             }
         }
         return result;
+    }
+
+    pub fn invert(self: Self) !Self {
+        var out: [16]f32 = undefined;
+        var det: f32 = undefined;
+
+        out[0] = self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[2] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[2] -
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[1] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[1] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[2] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[1];
+
+        out[4] = -self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[2] +
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[2] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[1] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[1] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[2] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[1];
+
+        out[8] = self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[1] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[1] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[2] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[1] +
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[2] -
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[2] * self.rows[3].data[3];
+
+        out[12] = -self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[1] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[1] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[2] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[1] -
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[2] +
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[2] * self.rows[3].data[3];
+
+        out[1] = -self.rows[0].data[1] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[0] +
+            self.rows[0].data[1] * self.rows[1].data[2] * self.rows[2].data[0] * self.rows[3].data[3] +
+            self.rows[0].data[1] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[0] -
+            self.rows[0].data[1] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[2] -
+            self.rows[0].data[1] * self.rows[1].data[0] * self.rows[2].data[2] * self.rows[3].data[3] +
+            self.rows[0].data[1] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[2];
+
+        out[5] = self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[0] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[2] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[2] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[2];
+
+        out[9] = -self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[0] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[1] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[1] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[1];
+
+        out[13] = self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[0] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[1] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[1] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[1];
+
+        out[2] = self.rows[0].data[1] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[0] -
+            self.rows[0].data[1] * self.rows[1].data[2] * self.rows[2].data[0] * self.rows[3].data[3] -
+            self.rows[0].data[1] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[0] +
+            self.rows[0].data[1] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[2] +
+            self.rows[0].data[1] * self.rows[1].data[0] * self.rows[2].data[2] * self.rows[3].data[3] -
+            self.rows[0].data[1] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[2];
+
+        out[6] = -self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[0] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[2] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[2] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[2];
+
+        out[10] = self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[0] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[1] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[1] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[1];
+
+        out[14] = -self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[0] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[1] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[1] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[1];
+
+        out[3] = -self.rows[0].data[1] * self.rows[1].data[2] * self.rows[2].data[0] * self.rows[3].data[3] +
+            self.rows[0].data[1] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[0] +
+            self.rows[0].data[1] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[2] -
+            self.rows[0].data[1] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[0] -
+            self.rows[0].data[1] * self.rows[1].data[0] * self.rows[2].data[2] * self.rows[3].data[3] +
+            self.rows[0].data[1] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[2];
+
+        out[7] = self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[0] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[2] * self.rows[2].data[3] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[2] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[2] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[2] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[2];
+
+        out[11] = -self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[0] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[1] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[1] * self.rows[3].data[3] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[1];
+
+        out[15] = self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[0] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[1] * self.rows[2].data[3] * self.rows[3].data[0] -
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[1] * self.rows[3].data[0] +
+            self.rows[0].data[0] * self.rows[1].data[3] * self.rows[2].data[0] * self.rows[3].data[1] +
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[1] * self.rows[3].data[3] -
+            self.rows[0].data[0] * self.rows[1].data[0] * self.rows[2].data[3] * self.rows[3].data[1];
+
+        det = self.rows[0].data[0] * out[0] + self.rows[0].data[1] * out[4] + self.rows[0].data[2] * out[8] + self.rows[0].data[3] * out[12];
+
+        if (det == 0) {
+            return error.SingularMatrix;
+        }
+
+        det = 1.0 / det;
+
+        for (0..16) |i| {
+            out[i] *= det;
+        }
+
+        return fromRows(
+            Vec4.fromArray(out[0..4].*),
+            Vec4.fromArray(out[4..8].*),
+            Vec4.fromArray(out[8..12].*),
+            Vec4.fromArray(out[12..16].*),
+        );
+    }
+
+    pub fn transformPoint(self: Self, point: Vec2) Vec2 {
+        const x = self.rows[0].data[0] * point.x() + self.rows[0].data[1] * point.y() + self.rows[0].data[3];
+        const y = self.rows[1].data[0] * point.x() + self.rows[1].data[1] * point.y() + self.rows[1].data[3];
+        return Vec2.init(x, y);
+    }
+
+    pub inline fn rotationX(angle: f32) Self {
+        const c = @cos(angle);
+        const s = @sin(angle);
+        return fromRows(
+            Vec4.init(1, 0, 0, 0),
+            Vec4.init(0, c, -s, 0),
+            Vec4.init(0, s, c, 0),
+            Vec4.init(0, 0, 0, 1),
+        );
+    }
+
+    pub inline fn rotationY(angle: f32) Self {
+        const c = @cos(angle);
+        const s = @sin(angle);
+        return fromRows(
+            Vec4.init(c, 0, s, 0),
+            Vec4.init(0, 1, 0, 0),
+            Vec4.init(-s, 0, c, 0),
+            Vec4.init(0, 0, 0, 1),
+        );
+    }
+
+    pub inline fn rotationZ(angle: f32) Self {
+        const c = @cos(angle);
+        const s = @sin(angle);
+        return fromRows(
+            Vec4.init(c, -s, 0, 0),
+            Vec4.init(s, c, 0, 0),
+            Vec4.init(0, 0, 1, 0),
+            Vec4.init(0, 0, 0, 1),
+        );
+    }
+
+    pub inline fn scaling(sx: f32, sy: f32, sz: f32) Self {
+        return fromRows(
+            Vec4.init(sx, 0, 0, 0),
+            Vec4.init(0, sy, 0, 0),
+            Vec4.init(0, 0, sz, 0),
+            Vec4.init(0, 0, 0, 1),
+        );
+    }
+
+    pub inline fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) Self {
+        const f = 1.0 / @tan(fovy / 2.0);
+        const nf = 1.0 / (near - far);
+
+        return fromRows(
+            Vec4.init(f / aspect, 0, 0, 0),
+            Vec4.init(0, f, 0, 0),
+            Vec4.init(0, 0, (far + near) * nf, -1),
+            Vec4.init(0, 0, 2.0 * far * near * nf, 0),
+        );
+    }
+
+    pub inline fn lookAt(eye: Vec4, center: Vec4, up: Vec4) Self {
+        const f = center.sub(eye).normalize();
+        const s = f.cross(up).normalize();
+        const u = s.cross(f);
+
+        return fromRows(
+            Vec4.init(s.x(), s.y(), s.z(), -s.dot(eye)),
+            Vec4.init(u.x(), u.y(), u.z(), -u.dot(eye)),
+            Vec4.init(-f.x(), -f.y(), -f.z(), f.dot(eye)),
+            Vec4.init(0, 0, 0, 1),
+        );
     }
 };

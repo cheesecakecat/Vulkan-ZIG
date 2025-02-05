@@ -751,16 +751,12 @@ pub const Swapchain = struct {
             }
         }
 
-        // if triple buffering is requested but mailbox mode isn't available (common on AMD),
-        // log a warning since we'll have to fall back to another mode
         if (enable_triple_buffering and !has_mailbox) {
             logger.warn("vulkan: triple buffering requested but mailbox mode not supported (common on AMD GPUs)", .{});
             logger.warn("vulkan: falling back to standard vsync or immediate mode", .{});
         }
 
-        // if vsync is off, try immediate mode first, then mailbox if triple buffering
         if (!enable_vsync) {
-            // if triple buffering is enabled and mailbox is available, prefer that over immediate
             if (enable_triple_buffering and has_mailbox) {
                 for (available_modes) |mode| {
                     if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
@@ -770,7 +766,6 @@ pub const Swapchain = struct {
                 }
             }
 
-            // otherwise try immediate mode
             for (available_modes) |mode| {
                 if (mode == c.VK_PRESENT_MODE_IMMEDIATE_KHR) {
                     logger.debug("vulkan: selected immediate present mode for vsync off", .{});
@@ -779,7 +774,6 @@ pub const Swapchain = struct {
             }
         }
 
-        // if vsync is on but VRR is enabled, try relaxed FIFO
         if (enable_vsync and enable_vrr) {
             for (available_modes) |mode| {
                 if (mode == c.VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
@@ -789,7 +783,6 @@ pub const Swapchain = struct {
             }
         }
 
-        // For vsync on, or if no other modes are available, use FIFO
         for (available_modes) |mode| {
             if (mode == c.VK_PRESENT_MODE_FIFO_KHR) {
                 logger.debug("vulkan: selected FIFO present mode for vsync", .{});
