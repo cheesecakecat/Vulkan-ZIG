@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe_mod.addImport("mach-glfw", glfw_dep.module("mach-glfw"));
-    exe_mod.addImport("VK-ZIG_lib", lib_mod);
+    exe_mod.addImport("game", lib_mod);
 
     const lib = b.addStaticLibrary(.{
         .name = "VK-ZIG",
@@ -74,6 +74,11 @@ pub fn build(b: *std.Build) void {
         },
     };
 
+    lib.addCSourceFile(.{
+        .file = .{ .cwd_relative = "deps/stb_image.c" },
+        .flags = &.{"-std=c99"},
+    });
+
     lib.addIncludePath(.{ .cwd_relative = include_path });
     lib.addIncludePath(.{ .cwd_relative = "deps/" });
     lib.addLibraryPath(.{ .cwd_relative = lib_path });
@@ -91,7 +96,13 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
+    exe.addCSourceFile(.{
+        .file = .{ .cwd_relative = "deps/stb_image.c" },
+        .flags = &.{"-std=c99"},
+    });
+
     exe.addIncludePath(.{ .cwd_relative = include_path });
+    exe.addIncludePath(.{ .cwd_relative = "deps/" });
     exe.addLibraryPath(.{ .cwd_relative = lib_path });
     if (target.result.os.tag == .windows) {
         exe.linkSystemLibrary("vulkan-1");
@@ -113,28 +124,28 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const shader_step = b.step("shaders", "Compile shaders to SPIR-V");
-    const shader_dir = "shaders/";
-    const shaders = [_][]const u8{ "sprite.vert", "sprite.frag" };
+    // const shader_step = b.step("shaders", "Compile shaders to SPIR-V");
+    // const shader_dir = "shaders/";
+    // const shaders = [_][]const u8{ "sprite.vert", "sprite.frag" };
 
-    const shader_out_dir = "zig-out/shaders";
-    std.fs.cwd().makePath(shader_out_dir) catch |err| {
-        std.debug.print("Failed to create shader directory: {}\n", .{err});
-        return;
-    };
+    // const shader_out_dir = "zig-out/shaders";
+    // std.fs.cwd().makePath(shader_out_dir) catch |err| {
+    //     std.debug.print("Failed to create shader directory: {}\n", .{err});
+    //     return;
+    // };
 
-    inline for (shaders) |shader| {
-        const shader_path = shader_dir ++ shader;
-        const spv_path = shader_out_dir ++ "/" ++ shader ++ ".spv";
-        const shader_compile = b.addSystemCommand(&.{
-            "glslc",
-            shader_path,
-            "-o",
-            spv_path,
-        });
-        shader_step.dependOn(&shader_compile.step);
-        exe.step.dependOn(&shader_compile.step);
-    }
+    // inline for (shaders) |shader| {
+    //     const shader_path = shader_dir ++ shader;
+    //     const spv_path = shader_out_dir ++ "/" ++ shader ++ ".spv";
+    //     const shader_compile = b.addSystemCommand(&.{
+    //         "glslc",
+    //         shader_path,
+    //         "-o",
+    //         spv_path,
+    //     });
+    //     shader_step.dependOn(&shader_compile.step);
+    //     exe.step.dependOn(&shader_compile.step);
+    // }
 
     const lib_unit_tests = b.addTest(.{
         .root_module = lib_mod,

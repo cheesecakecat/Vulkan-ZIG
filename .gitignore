@@ -2,7 +2,6 @@
 .zig-cache/
 zig-out/
 release/
-debug/
 
 # Vulkan compiled shaders
 *.spv
@@ -33,7 +32,6 @@ test-tmp/
 .env.local
 
 # Log files
-*.log
 logs/
 
 # Ignore pipeline cache
